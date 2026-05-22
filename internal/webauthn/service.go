@@ -14,6 +14,21 @@ import (
 // authenticator returns an attestation format not in AcceptedAttestationFormats.
 var ErrAttestationNotAccepted = errors.New("webauthn: attestation format not accepted")
 
+// Type aliases re-exported so callers can stay decoupled from the
+// underlying library packages. These are aliases (not new types) so values
+// flow freely between this package and the library.
+type (
+	// SessionData is the per-ceremony state created by Begin and consumed by
+	// Finish. JSON-marshallable.
+	SessionData = gowebauthn.SessionData
+	// Credential is the validated credential returned by FinishRegistration
+	// or FinishLogin.
+	Credential = gowebauthn.Credential
+	// ParsedCredentialCreationData is the typed view of a parsed attestation
+	// response, produced by ParseCredentialCreation.
+	ParsedCredentialCreationData = protocol.ParsedCredentialCreationData
+)
+
 // CreationOptions is the wire payload returned from BeginRegistration:
 // the public-key options the browser passes to navigator.credentials.create,
 // plus the session id the caller will use to retrieve the SessionData blob
@@ -49,9 +64,9 @@ func (s *Service) BeginRegistration(user *User, sessionID string) (*CreationOpti
 	}, session, nil
 }
 
-// FinishRegistration verifies an attestation response and returns the
-// validated credential plus its attestation format. The caller persists the
-// credential via CredentialStore.Insert.
+// FinishRegistration verifies an attestation response read directly from an
+// *http.Request body and returns the validated credential. Convenience for
+// handlers that don't need an envelope around the credential.
 //
 // session must be the SessionData previously stored at BeginRegistration
 // and just consumed via ChallengeStore.Take (one-shot replay protection).
@@ -69,6 +84,36 @@ func (s *Service) FinishRegistration(user *User, session gowebauthn.SessionData,
 	}
 
 	return cred, nil
+}
+
+// CreateCredential is the parsed-response counterpart to FinishRegistration.
+// Use it when the wire format is a JSON envelope like
+// {"session_id":"...","credential":{...}}: decode the envelope in the
+// handler, then call ParseCredentialCreation on the inner credential bytes
+// and hand the parsed value here.
+func (s *Service) CreateCredential(user *User, session gowebauthn.SessionData, parsed *protocol.ParsedCredentialCreationData) (*gowebauthn.Credential, error) {
+	cred, err := s.web.CreateCredential(user, session, parsed)
+	if err != nil {
+		return nil, fmt.Errorf("create credential: %w", err)
+	}
+
+	if !IsAcceptedAttestation(cred.AttestationType) {
+		return nil, fmt.Errorf("%w: %q", ErrAttestationNotAccepted, cred.AttestationType)
+	}
+
+	return cred, nil
+}
+
+// ParseCredentialCreation parses a raw JSON credential creation response
+// (the `credential` field of the wire envelope) into the library's typed
+// form. Surfaces parse errors to the caller; no policy applied here.
+func ParseCredentialCreation(b []byte) (*protocol.ParsedCredentialCreationData, error) {
+	parsed, err := protocol.ParseCredentialCreationResponseBytes(b)
+	if err != nil {
+		return nil, fmt.Errorf("parse credential creation response: %w", err)
+	}
+
+	return parsed, nil
 }
 
 // MarshalSession serialises a SessionData for ChallengeStore.Save.
