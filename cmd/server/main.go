@@ -16,6 +16,7 @@ import (
 	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib" // sql.Open("pgx", ...) for golang-migrate
+	"github.com/redis/go-redis/v9"
 
 	"github.com/rdaniel1105/go-passkey-auth/internal/api"
 	"github.com/rdaniel1105/go-passkey-auth/internal/api/handler"
@@ -24,6 +25,13 @@ import (
 	redisstore "github.com/rdaniel1105/go-passkey-auth/internal/store/redis"
 	pkwebauthn "github.com/rdaniel1105/go-passkey-auth/internal/webauthn"
 )
+
+// redisPinger adapts *redis.Client to the handler's pingable interface.
+// go-redis's Ping returns a *StatusCmd, but the health handler wants
+// Ping(ctx) error like pgxpool exposes.
+type redisPinger struct {
+	client *redis.Client
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -90,10 +98,17 @@ func run(logger *slog.Logger) error {
 		Credentials: credentialStore,
 	})
 
+	health := handler.NewHealth(handler.HealthDeps{
+		Logger:   logger,
+		Postgres: pool,
+		Redis:    redisPinger{client: redisClient},
+	})
+
 	router := api.New(api.Deps{
 		Logger:   logger,
 		Auth:     auth,
 		User:     user,
+		Health:   health,
 		Sessions: sessionStore,
 	})
 
@@ -128,6 +143,10 @@ func run(logger *slog.Logger) error {
 	defer cancel()
 
 	return srv.Shutdown(shutdownCtx)
+}
+
+func (p redisPinger) Ping(ctx context.Context) error {
+	return p.client.Ping(ctx).Err()
 }
 
 // applyMigrations runs all pending migrations against the database, using

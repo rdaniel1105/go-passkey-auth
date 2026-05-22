@@ -22,18 +22,23 @@ type Deps struct {
 	Logger   *slog.Logger
 	Auth     *handler.AuthHandler
 	User     *handler.UserHandler
+	Health   *handler.HealthHandler
 	Sessions middleware.SessionStore
 }
 
-// New builds the chi router. All routes are prefixed with /api/v1; health
-// endpoints live at the root and are added in a later task.
+// New builds the chi router. /health and /health/ready live at the root
+// for load balancers and orchestrators; everything else is under /api/v1.
 func New(deps Deps) http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	r.Use(middleware.RequestLogger(deps.Logger))
 	r.Use(chimw.Recoverer)
 	r.Use(chimw.Timeout(30 * time.Second))
+
+	r.Get("/health", deps.Health.Live)
+	r.Get("/health/ready", deps.Health.Ready)
 
 	requireSession := middleware.RequireSession(deps.Sessions, deps.Logger)
 
