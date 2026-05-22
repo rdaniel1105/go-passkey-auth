@@ -1,31 +1,11 @@
-// Package domain holds the core entities used across the service: User,
-// Credential, and the sentinel errors returned by the store layer.
+// Package domain holds the core entities used across the service (User,
+// Credential) and the sentinel errors returned by the store layer.
 package domain
 
 import (
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
-)
-
-// Sentinel errors returned by stores. Use errors.Is to match.
-var (
-	// ErrUserNotFound is returned when a user lookup finds no row.
-	ErrUserNotFound = errors.New("user not found")
-	// ErrCredentialNotFound is returned when a credential lookup finds no
-	// live row (soft-deleted rows are treated as not found).
-	ErrCredentialNotFound = errors.New("credential not found")
-	// ErrUsernameTaken is returned when registering a non-guest user with a
-	// username that already exists.
-	ErrUsernameTaken = errors.New("username already taken")
-	// ErrCredentialExists is returned when a credential_id is already
-	// registered to a live credential row.
-	ErrCredentialExists = errors.New("credential already registered")
-	// ErrLastCredential is returned when a delete would remove the user's
-	// only remaining live credential. The caller must require the user to
-	// register a replacement first.
-	ErrLastCredential = errors.New("cannot delete the last credential")
 )
 
 // User is a registered or guest user. Guests have is_guest = true and no
