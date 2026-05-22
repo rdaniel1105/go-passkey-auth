@@ -26,6 +26,9 @@ type userStore interface {
 // credentialStore is the slice of CredentialStore the auth handler depends on.
 type credentialStore interface {
 	Insert(ctx context.Context, c *domain.Credential) (*domain.Credential, error)
+	GetByCredentialID(ctx context.Context, credentialID []byte) (*domain.Credential, error)
+	ListByUserID(ctx context.Context, userID uuid.UUID) ([]*domain.Credential, error)
+	UpdateAfterAssertion(ctx context.Context, id uuid.UUID, signCount uint32, backupEligible, backupState bool) error
 }
 
 // challengeStore is the slice of ChallengeStore the auth handler depends on.
@@ -34,10 +37,23 @@ type challengeStore interface {
 	Take(ctx context.Context, sessionID string) ([]byte, error)
 }
 
+// sessionStore is the slice of SessionStore the auth handler depends on.
+type sessionStore interface {
+	Create(ctx context.Context, userID uuid.UUID) (string, error)
+	Delete(ctx context.Context, token string) error
+}
+
 // webauthnService is the slice of *webauthn.Service the auth handler uses.
+// Parsing of the raw JSON credential bytes goes through the service (rather
+// than via package-level helpers) so unit tests can stub the parser; only
+// the integration tests need to roundtrip real attestation/assertion data.
 type webauthnService interface {
 	BeginRegistration(user *pkwebauthn.User, sessionID string) (*pkwebauthn.CreationOptions, *pkwebauthn.SessionData, error)
+	ParseCredentialCreation(b []byte) (*pkwebauthn.ParsedCredentialCreationData, error)
 	CreateCredential(user *pkwebauthn.User, session pkwebauthn.SessionData, parsed *pkwebauthn.ParsedCredentialCreationData) (*pkwebauthn.Credential, error)
+	BeginLogin(sessionID string) (*pkwebauthn.AssertionOptions, *pkwebauthn.SessionData, error)
+	ParseCredentialAssertion(b []byte) (*pkwebauthn.ParsedCredentialAssertionData, error)
+	ValidateLogin(handler pkwebauthn.DiscoverableUserHandler, session pkwebauthn.SessionData, parsed *pkwebauthn.ParsedCredentialAssertionData) (*pkwebauthn.Credential, error)
 }
 
 // AuthDeps bundles the collaborators the AuthHandler needs.
@@ -47,25 +63,32 @@ type AuthDeps struct {
 	Users       userStore
 	Credentials credentialStore
 	Challenges  challengeStore
+	Sessions    sessionStore
+	// SessionMaxAge is how long the issued session cookie lives.
+	SessionMaxAge int
 }
 
 // AuthHandler implements the /auth/* endpoints.
 type AuthHandler struct {
-	logger      *slog.Logger
-	webauthn    webauthnService
-	users       userStore
-	credentials credentialStore
-	challenges  challengeStore
+	logger        *slog.Logger
+	webauthn      webauthnService
+	users         userStore
+	credentials   credentialStore
+	challenges    challengeStore
+	sessions      sessionStore
+	sessionMaxAge int
 }
 
 // NewAuth constructs an AuthHandler from its dependencies.
 func NewAuth(deps AuthDeps) *AuthHandler {
 	return &AuthHandler{
-		logger:      deps.Logger,
-		webauthn:    deps.WebAuthn,
-		users:       deps.Users,
-		credentials: deps.Credentials,
-		challenges:  deps.Challenges,
+		logger:        deps.Logger,
+		webauthn:      deps.WebAuthn,
+		users:         deps.Users,
+		credentials:   deps.Credentials,
+		challenges:    deps.Challenges,
+		sessions:      deps.Sessions,
+		sessionMaxAge: deps.SessionMaxAge,
 	}
 }
 
@@ -224,7 +247,7 @@ func (h *AuthHandler) CompleteRegister(w http.ResponseWriter, r *http.Request) {
 		DisplayName: user.DisplayName,
 	}
 
-	parsed, err := pkwebauthn.ParseCredentialCreation(req.Credential)
+	parsed, err := h.webauthn.ParseCredentialCreation(req.Credential)
 	if err != nil {
 		h.logger.Warn("register complete: parse credential", "err", err)
 		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
@@ -282,6 +305,7 @@ func domainCredentialFromLib(userID uuid.UUID, handle []byte, cred *pkwebauthn.C
 		WebAuthnUserHandle: handle,
 		SignCount:          cred.Authenticator.SignCount,
 		Transports:         transports,
+		AttestationFormat:  cred.AttestationFormat,
 		AttestationType:    cred.AttestationType,
 		BackupEligible:     cred.Flags.BackupEligible,
 		BackupState:        cred.Flags.BackupState,
@@ -294,6 +318,277 @@ func domainCredentialFromLib(userID uuid.UUID, handle []byte, cred *pkwebauthn.C
 		}
 
 		out.AAGUID = &id
+	}
+
+	return out, nil
+}
+
+// --- Login ---
+
+// loginSession is the payload stored in the challenge store between
+// /login/begin and /login/complete. We only need the library SessionData
+// because the user is unknown until the authenticator responds (that's
+// the whole point of discoverable login).
+type loginSession struct {
+	Session pkwebauthn.SessionData `json:"session"`
+}
+
+// BeginLogin handles POST /auth/login/begin.
+//
+// No request body is required — discoverable login does not specify a user
+// up front. The client should call navigator.credentials.get with
+// mediation: "conditional" (autofill) or "required" (explicit) using these
+// options.
+func (h *AuthHandler) BeginLogin(w http.ResponseWriter, r *http.Request) {
+	sessionID, err := newSessionID()
+	if err != nil {
+		h.logger.Error("login: session id", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	options, session, err := h.webauthn.BeginLogin(sessionID)
+	if err != nil {
+		h.logger.Error("login: webauthn begin", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	payload, err := json.Marshal(loginSession{Session: *session})
+	if err != nil {
+		h.logger.Error("login: marshal session", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if err := h.challenges.Save(r.Context(), sessionID, payload); err != nil {
+		h.logger.Error("login: save challenge", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	writeJSON(w, h.logger, http.StatusOK, options)
+}
+
+type completeLoginRequest struct {
+	SessionID  string          `json:"session_id"`
+	Credential json.RawMessage `json:"credential"`
+}
+
+type completeLoginResponse struct {
+	UserID      string `json:"user_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
+// CompleteLogin handles POST /auth/login/complete.
+//
+// Flow:
+//  1. Decode the envelope { session_id, credential }.
+//  2. Atomically GET+DEL the challenge session.
+//  3. Parse the assertion response.
+//  4. Validate via webauthn.ValidateLogin, resolving the user via a callback
+//     that hits credentialStore.GetByCredentialID and userStore.GetByID.
+//  5. Apply sign-count and AAGUID anomaly logging (PRD §7).
+//  6. UpdateAfterAssertion writes the new counter and BE/BS flags.
+//  7. Issue a session token, write it to the HttpOnly cookie. The token is
+//     NEVER returned in the JSON body (PRD §13).
+func (h *AuthHandler) CompleteLogin(w http.ResponseWriter, r *http.Request) {
+	var req completeLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	if req.SessionID == "" || len(req.Credential) == 0 {
+		writeError(w, h.logger, http.StatusBadRequest, "missing_fields")
+		return
+	}
+
+	raw, err := h.challenges.Take(r.Context(), req.SessionID)
+	if errors.Is(err, domain.ErrChallengeNotFound) {
+		writeError(w, h.logger, http.StatusUnauthorized, "session_invalid")
+		return
+	}
+
+	if err != nil {
+		h.logger.Error("login complete: take challenge", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	var stored loginSession
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		h.logger.Error("login complete: unmarshal session", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	parsed, err := h.webauthn.ParseCredentialAssertion(req.Credential)
+	if err != nil {
+		h.logger.Warn("login complete: parse credential", "err", err)
+		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	// resolved holds the domain values we look up inside the resolver so we
+	// can act on them after the library returns. The library only gives us
+	// back its own *Credential type.
+	var (
+		resolvedUser *domain.User
+		resolvedCred *domain.Credential
+	)
+
+	var resolver pkwebauthn.DiscoverableUserHandler = func(_, _ []byte) (pkwebauthn.LibUser, error) {
+		dbCred, err := h.credentials.GetByCredentialID(r.Context(), parsed.RawID)
+		if err != nil {
+			return nil, err
+		}
+
+		dbUser, err := h.users.GetByID(r.Context(), dbCred.UserID)
+		if err != nil {
+			return nil, err
+		}
+
+		resolvedUser = dbUser
+		resolvedCred = dbCred
+
+		libCred, err := libCredentialFromDomain(dbCred)
+		if err != nil {
+			return nil, err
+		}
+
+		return &pkwebauthn.User{
+			Handle:      dbCred.WebAuthnUserHandle,
+			Name:        dbUser.Username,
+			DisplayName: dbUser.DisplayName,
+			Credentials: []pkwebauthn.Credential{*libCred},
+		}, nil
+	}
+
+	cred, err := h.webauthn.ValidateLogin(resolver, stored.Session, parsed)
+	if err != nil {
+		h.logger.Warn("login complete: validate", "err", err)
+		writeError(w, h.logger, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if resolvedCred == nil || resolvedUser == nil {
+		h.logger.Error("login complete: resolver bypassed", "credential_id", parsed.RawID)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	h.recordCounterAnomalies(resolvedCred, cred)
+
+	if err := h.credentials.UpdateAfterAssertion(
+		r.Context(),
+		resolvedCred.ID,
+		cred.Authenticator.SignCount,
+		cred.Flags.BackupEligible,
+		cred.Flags.BackupState,
+	); err != nil {
+		h.logger.Error("login complete: update credential", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	token, err := h.sessions.Create(r.Context(), resolvedUser.ID)
+	if err != nil {
+		h.logger.Error("login complete: create session", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	setSessionCookie(w, r, token, h.sessionMaxAge)
+
+	writeJSON(w, h.logger, http.StatusOK, completeLoginResponse{
+		UserID:      resolvedUser.ID.String(),
+		Username:    resolvedUser.Username,
+		DisplayName: resolvedUser.DisplayName,
+	})
+}
+
+// Logout handles POST /auth/logout. Idempotent — a missing or invalid
+// cookie is not treated as an error; the response is always 204.
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
+		if err := h.sessions.Delete(r.Context(), cookie.Value); err != nil {
+			h.logger.Warn("logout: delete session", "err", err)
+		}
+	}
+
+	clearSessionCookie(w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// recordCounterAnomalies emits structured warnings for the security events
+// PRD §7 calls out. The actual rejection of new < stored is enforced by the
+// library before we get here; what we add is visibility on the *unusual*
+// cases that the library accepts but a human should know about.
+func (h *AuthHandler) recordCounterAnomalies(stored *domain.Credential, asserted *pkwebauthn.Credential) {
+	newCount := asserted.Authenticator.SignCount
+
+	// Counter reset: stored was non-zero, new is zero. Often a sign the
+	// authenticator was wiped and re-provisioned.
+	if stored.SignCount > 0 && newCount == 0 {
+		h.logger.Warn("passkey counter reset",
+			"credential_id", stored.ID,
+			"user_id", stored.UserID,
+			"stored_count", stored.SignCount,
+		)
+	}
+
+	// AAGUID mismatch: the asserted credential reports a different model
+	// than the registration did. Should not normally happen.
+	if stored.AAGUID != nil && len(asserted.Authenticator.AAGUID) > 0 {
+		storedID := *stored.AAGUID
+		assertedID, err := uuid.FromBytes(asserted.Authenticator.AAGUID)
+		if err == nil && storedID != assertedID {
+			h.logger.Warn("passkey aaguid mismatch",
+				"credential_id", stored.ID,
+				"user_id", stored.UserID,
+				"stored_aaguid", storedID,
+				"asserted_aaguid", assertedID,
+			)
+		}
+	}
+
+	// Backup eligibility/state flip: a credential switching from synced to
+	// device-bound (or vice versa) is worth flagging.
+	if stored.BackupEligible != asserted.Flags.BackupEligible ||
+		stored.BackupState != asserted.Flags.BackupState {
+		h.logger.Warn("passkey backup flags changed",
+			"credential_id", stored.ID,
+			"user_id", stored.UserID,
+			"stored_be", stored.BackupEligible, "stored_bs", stored.BackupState,
+			"asserted_be", asserted.Flags.BackupEligible, "asserted_bs", asserted.Flags.BackupState,
+		)
+	}
+}
+
+// libCredentialFromDomain reconstructs the library's Credential type from
+// our domain.Credential so the discoverable-login resolver can return a
+// User with a credentials slice for the library to match against.
+func libCredentialFromDomain(c *domain.Credential) (*pkwebauthn.Credential, error) {
+	out := &pkwebauthn.Credential{
+		ID:        c.CredentialID,
+		PublicKey: c.PublicKey,
+		Flags: pkwebauthn.CredentialFlags{
+			BackupEligible: c.BackupEligible,
+			BackupState:    c.BackupState,
+		},
+		Authenticator: pkwebauthn.Authenticator{
+			SignCount: c.SignCount,
+		},
+	}
+
+	if c.AAGUID != nil {
+		out.Authenticator.AAGUID = c.AAGUID[:]
+	}
+
+	for _, t := range c.Transports {
+		out.Transport = append(out.Transport, pkwebauthn.AuthenticatorTransport(t))
 	}
 
 	return out, nil

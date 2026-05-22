@@ -54,3 +54,53 @@ func IsAcceptedAttestation(format string) bool {
 	_, ok := AcceptedAttestationFormats[format]
 	return ok
 }
+
+// AcceptedAttestationTypes is the second axis of attestation policy.
+//
+// WebAuthn separates two things:
+//   - format ("packed", "tpm", "none", …) — how the statement is encoded.
+//   - type  ("basic_full", "basic_surrogate", …) — the trust relationship
+//     between the signing key and the authenticator model.
+//
+// Library docs and the FIDO registry call out these type values, returned
+// by *Credential.AttestationType after FinishRegistration:
+//
+//   - basic_full       — per-model batch attestation key signs the public
+//                        key. Strongest cryptographic proof of model.
+//   - basic_surrogate  — self-attestation: the credential signs itself.
+//                        No proof of model. The default for most consumer
+//                        passkeys (iCloud Keychain, Google Password
+//                        Manager) that intentionally avoid revealing
+//                        device fingerprints.
+//   - attca            — PrivacyCA attestation (TCG style, mostly TPM).
+//   - anonca           — Anonymisation CA. Privacy-preserving group
+//                        attestation (Android SafetyNet/Keystore, Apple).
+//   - ecdaa            — Direct anonymous attestation. Optional and rare
+//                        in practice.
+//   - none             — No attestation at all.
+//
+// We accept every value the library can return for the same reason we
+// accept every format: the library has already verified cryptographically
+// whatever is verifiable; this set is the policy gate above. Future
+// operators tightening policy (e.g. for high-assurance accounts) should
+// narrow this list — typically by dropping basic_surrogate to require a
+// proof of model.
+var AcceptedAttestationTypes = map[string]struct{}{
+	"none":            {},
+	"basic_full":      {},
+	"basic_surrogate": {},
+	"attca":           {},
+	"anonca":          {},
+	"ecdaa":           {},
+}
+
+// IsAcceptedAttestationType reports whether the given attestation type is
+// in the accepted set. Empty string is treated as "none".
+func IsAcceptedAttestationType(t string) bool {
+	if t == "" {
+		t = "none"
+	}
+
+	_, ok := AcceptedAttestationTypes[t]
+	return ok
+}

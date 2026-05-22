@@ -30,7 +30,8 @@ func newTestCredential(userID uuid.UUID, suffix byte) *domain.Credential {
 		AAGUID:             &aaguid,
 		SignCount:          0,
 		Transports:         []string{"internal", "hybrid"},
-		AttestationType:    "none",
+		AttestationFormat:    "none",
+		AttestationType:      "none",
 		BackupEligible:     true,
 		BackupState:        true,
 		Name:               &name,
@@ -64,7 +65,7 @@ func TestCredentialStore_Insert(t *testing.T) {
 	c.Equal([]string{"internal", "hybrid"}, out.Transports)
 	c.True(out.BackupEligible)
 	c.True(out.BackupState)
-	c.Equal("none", out.AttestationType)
+	c.Equal("none", out.AttestationFormat)
 	c.False(out.CreatedAt.IsZero())
 	c.Nil(out.LastUsedAt)
 }

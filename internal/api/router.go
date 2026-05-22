@@ -36,6 +36,9 @@ func New(deps Deps) http.Handler {
 		r.Route("/auth", func(r chi.Router) {
 			r.Post("/register/begin", deps.Auth.BeginRegister)
 			r.Post("/register/complete", deps.Auth.CompleteRegister)
+			r.Post("/login/begin", deps.Auth.BeginLogin)
+			r.Post("/login/complete", deps.Auth.CompleteLogin)
+			r.Post("/logout", deps.Auth.Logout)
 		})
 	})
 

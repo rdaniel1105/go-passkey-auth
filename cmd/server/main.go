@@ -69,11 +69,13 @@ func run(logger *slog.Logger) error {
 	}
 
 	auth := handler.NewAuth(handler.AuthDeps{
-		Logger:      logger,
-		WebAuthn:    wa,
-		Users:       pgstore.NewUserStore(pool),
-		Credentials: pgstore.NewCredentialStore(pool),
-		Challenges:  redisstore.NewChallengeStore(redisClient, cfg.ChallengeTTL),
+		Logger:        logger,
+		WebAuthn:      wa,
+		Users:         pgstore.NewUserStore(pool),
+		Credentials:   pgstore.NewCredentialStore(pool),
+		Challenges:    redisstore.NewChallengeStore(redisClient, cfg.ChallengeTTL),
+		Sessions:      redisstore.NewSessionStore(redisClient, cfg.SessionTTL),
+		SessionMaxAge: int(cfg.SessionTTL.Seconds()),
 	})
 
 	router := api.New(api.Deps{

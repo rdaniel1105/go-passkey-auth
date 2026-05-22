@@ -43,6 +43,7 @@ CREATE TABLE credentials (
     aaguid               UUID,
     sign_count           BIGINT NOT NULL DEFAULT 0,
     transports           TEXT[] NOT NULL DEFAULT '{}',
+    attestation_format   TEXT NOT NULL DEFAULT 'none',
     attestation_type     TEXT NOT NULL DEFAULT 'none',
     backup_eligible      BOOLEAN NOT NULL DEFAULT FALSE,
     backup_state         BOOLEAN NOT NULL DEFAULT FALSE,

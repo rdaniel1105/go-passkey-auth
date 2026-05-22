@@ -20,9 +20,19 @@ type User struct {
 	PromotedAt  *time.Time
 }
 
-// Credential is a single registered passkey. WebAuthnUserHandle is the opaque
-// per-registration handle that was sent to the authenticator as user.id; it
-// is NOT the user UUID. See PRD §7.
+// Credential is a single registered passkey. WebAuthnUserHandle is the
+// opaque per-registration handle that was sent to the authenticator as
+// user.id; it is NOT the user UUID. See PRD §7.
+//
+// Two attestation columns track the two axes WebAuthn separates:
+//   - AttestationFormat is the wire format ("none", "packed", "tpm",
+//     "android-key", "android-safetynet", "fido-u2f", "apple").
+//   - AttestationType is the trust relationship ("none", "basic_full",
+//     "basic_surrogate", "attca", "anonca", "ecdaa").
+//
+// Both are validated against the policy sets in the webauthn package on
+// registration and stored here so future operators can audit or tighten
+// either axis without a migration.
 type Credential struct {
 	ID                 uuid.UUID
 	UserID             uuid.UUID
@@ -32,6 +42,7 @@ type Credential struct {
 	AAGUID             *uuid.UUID
 	SignCount          uint32
 	Transports         []string
+	AttestationFormat  string
 	AttestationType    string
 	BackupEligible     bool
 	BackupState        bool

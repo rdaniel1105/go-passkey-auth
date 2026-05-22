@@ -31,18 +31,18 @@ func (s *CredentialStore) Insert(ctx context.Context, c *domain.Credential) (*do
 	const q = `
 		INSERT INTO credentials (
 			user_id, credential_id, public_key, webauthn_user_handle,
-			aaguid, sign_count, transports, attestation_type,
+			aaguid, sign_count, transports, attestation_format, attestation_type,
 			backup_eligible, backup_state, name
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, user_id, credential_id, public_key, webauthn_user_handle,
-		          aaguid, sign_count, transports, attestation_type,
+		          aaguid, sign_count, transports, attestation_format, attestation_type,
 		          backup_eligible, backup_state, name, created_at, last_used_at
 	`
 
 	row := s.pool.QueryRow(ctx, q,
 		c.UserID, c.CredentialID, c.PublicKey, c.WebAuthnUserHandle,
-		c.AAGUID, int64(c.SignCount), c.Transports, c.AttestationType,
+		c.AAGUID, int64(c.SignCount), c.Transports, c.AttestationFormat, c.AttestationType,
 		c.BackupEligible, c.BackupState, c.Name,
 	)
 
@@ -64,7 +64,7 @@ func (s *CredentialStore) Insert(ctx context.Context, c *domain.Credential) (*do
 func (s *CredentialStore) GetByCredentialID(ctx context.Context, credentialID []byte) (*domain.Credential, error) {
 	const q = `
 		SELECT id, user_id, credential_id, public_key, webauthn_user_handle,
-		       aaguid, sign_count, transports, attestation_type,
+		       aaguid, sign_count, transports, attestation_format, attestation_type,
 		       backup_eligible, backup_state, name, created_at, last_used_at
 		FROM credentials
 		WHERE credential_id = $1 AND deleted_at IS NULL
@@ -77,7 +77,7 @@ func (s *CredentialStore) GetByCredentialID(ctx context.Context, credentialID []
 func (s *CredentialStore) ListByUserID(ctx context.Context, userID uuid.UUID) ([]*domain.Credential, error) {
 	const q = `
 		SELECT id, user_id, credential_id, public_key, webauthn_user_handle,
-		       aaguid, sign_count, transports, attestation_type,
+		       aaguid, sign_count, transports, attestation_format, attestation_type,
 		       backup_eligible, backup_state, name, created_at, last_used_at
 		FROM credentials
 		WHERE user_id = $1 AND deleted_at IS NULL
@@ -218,7 +218,7 @@ func scanCredential(row pgx.Row) (*domain.Credential, error) {
 
 	err := row.Scan(
 		&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &c.WebAuthnUserHandle,
-		&c.AAGUID, &count, &c.Transports, &c.AttestationType,
+		&c.AAGUID, &count, &c.Transports, &c.AttestationFormat, &c.AttestationType,
 		&c.BackupEligible, &c.BackupState, &c.Name, &c.CreatedAt, &c.LastUsedAt,
 	)
 
