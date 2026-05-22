@@ -1,0 +1,77 @@
+# Safety: this workflow does not interpolate any untrusted event payload
+# (issue titles, PR descriptions, commit messages, etc.) into shell
+# commands. All `run:` blocks are static. See
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      # ubuntu-latest runners come with Docker installed and running, so
+      # testcontainers picks it up automatically — no setup step needed for
+      # the Postgres + Redis integration tests.
+      - name: Test
+        run: go test -count=1 -race ./...
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint (incl. gocyclo + gocognit)
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Reports stdlib and third-party CVEs whose vulnerable functions
+      # are *actually called* from our code. Fails only on confirmed
+      # call-paths, not on transitive imports of vulnerable modules we
+      # don't reach.
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

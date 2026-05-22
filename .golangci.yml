@@ -1,0 +1,41 @@
+# golangci-lint configuration.
+#
+# Linter selection biases toward "would have caught a real bug" over
+# style. Complexity gates (gocyclo, gocognit) are calibrated to the
+# *current* ceiling: CI fails when a new commit pushes a function over
+# the existing budget. As handlers get refactored, ratchet the numbers
+# down. Don't raise them.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck      # un-checked errors
+    - govet         # vet diagnostics
+    - ineffassign   # ineffective assignments
+    - staticcheck   # SA, ST, U, QF rules
+    - unused        # dead code
+    - gocyclo       # cyclomatic complexity
+    - gocognit      # cognitive complexity
+
+  settings:
+    gocyclo:
+      # /Complete handlers ride at 21 because they encode many distinct
+      # error paths (challenge expired vs malformed credential vs
+      # attestation rejected vs username taken vs DB down). Each branch
+      # maps to a stable response code; the surface is wide on purpose.
+      # Ratchet to 9 (Truora default) when those flows get a shared
+      # translateError helper.
+      min-complexity: 21
+
+    gocognit:
+      # Cognitive tracks cyclomatic closely here. /Complete handlers
+      # peak at 22 for the same reason.
+      min-complexity: 22
+
+  exclusions:
+    rules:
+      # Tests are allowed to be loud — table-driven setups push cognit
+      # high but stay readable.
+      - path: _test\.go
+        linters: [gocyclo, gocognit]

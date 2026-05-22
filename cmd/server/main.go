@@ -64,7 +64,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer redisClient.Close()
+	defer func() { _ = redisClient.Close() }()
 
 	wa, err := pkwebauthn.NewService(pkwebauthn.Config{
 		RPID:            cfg.RPID,
@@ -161,7 +161,7 @@ func applyMigrations(dsn string) error {
 	if err != nil {
 		return err
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	db, err := migratepg.WithInstance(sqlDB, &migratepg.Config{})
 	if err != nil {

@@ -209,19 +209,26 @@ func (a *Authenticator) buildAuthData(attested bool) ([]byte, error) {
 //
 //	{1: 2, 3: -7, -1: 1, -2: x, -3: y}
 //	  kty: EC2  alg: ES256  crv: P-256  x, y: 32-byte coords
+//
+// PublicKey.Bytes returns the uncompressed-point form (0x04 || X || Y) per
+// SEC 1; for P-256 that's a fixed 65-byte layout from which we slice X and
+// Y directly. This avoids reaching into the deprecated big.Int coords.
 func (a *Authenticator) cosePublicKey() ([]byte, error) {
-	pub := a.privKey.PublicKey
-	x := make([]byte, 32)
-	y := make([]byte, 32)
-	pub.X.FillBytes(x)
-	pub.Y.FillBytes(y)
+	raw, err := a.privKey.PublicKey.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("encode public key: %w", err)
+	}
+
+	if len(raw) != 65 || raw[0] != 0x04 {
+		return nil, fmt.Errorf("unexpected uncompressed point: len=%d, tag=0x%02x", len(raw), raw[0])
+	}
 
 	return encodeCBOR(map[int]any{
-		1:  2,  // kty: EC2
-		3:  -7, // alg: ES256
-		-1: 1,  // crv: P-256
-		-2: x,
-		-3: y,
+		1:  2,        // kty: EC2
+		3:  -7,       // alg: ES256
+		-1: 1,        // crv: P-256
+		-2: raw[1:33],  // x
+		-3: raw[33:65], // y
 	})
 }
 

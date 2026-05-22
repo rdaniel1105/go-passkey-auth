@@ -71,7 +71,7 @@ func runMigrations(dsn string) error {
 	if err != nil {
 		return fmt.Errorf("open sql db: %w", err)
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	db, err := migratepg.WithInstance(sqlDB, &migratepg.Config{})
 	if err != nil {

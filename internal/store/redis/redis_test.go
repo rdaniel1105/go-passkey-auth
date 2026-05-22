@@ -38,7 +38,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("open redis client: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	testClient = client
 	os.Exit(m.Run())

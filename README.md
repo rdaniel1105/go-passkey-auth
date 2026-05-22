@@ -1,5 +1,8 @@
 # go-passkey-auth
 
+[![test](https://github.com/rdaniel1105/go-passkey-auth/actions/workflows/test.yml/badge.svg)](https://github.com/rdaniel1105/go-passkey-auth/actions/workflows/test.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/rdaniel1105/go-passkey-auth.svg)](https://pkg.go.dev/github.com/rdaniel1105/go-passkey-auth)
+
 A production-minded, standalone WebAuthn / Passkey authentication service in Go. Backed by Redis (sessions, challenges, guest tokens) and PostgreSQL (users, credentials). Implements the full WebAuthn registration and authentication ceremony with deliberate spec decisions documented inline.
 
 The product is the API. A minimal HTML demo client is included so the flow can be exercised in a browser without writing any frontend code.

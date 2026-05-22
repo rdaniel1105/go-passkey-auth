@@ -191,7 +191,7 @@ func applyMigrations(dsn string) error {
 	if err != nil {
 		return err
 	}
-	defer sqlDB.Close()
+	defer func() { _ = sqlDB.Close() }()
 
 	db, err := migratepg.WithInstance(sqlDB, &migratepg.Config{})
 	if err != nil {
@@ -230,7 +230,7 @@ func do(t *testing.T, client *http.Client, req *http.Request) httpResult {
 	c := require.New(t)
 	resp, err := client.Do(req)
 	c.NoError(err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	c.NoError(err)
