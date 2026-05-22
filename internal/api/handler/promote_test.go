@@ -144,9 +144,9 @@ func TestBeginPromote_HappyPath(t *testing.T) {
 		c.NoError(json.Unmarshal(payload, &stored))
 	}
 	c.True(stored.Promote)
-	c.Equal("alice", stored.PromoteName)
-	c.Equal("Alice", stored.PromoteDisplay)
-	c.Equal(guest.ID, stored.UserID)
+	c.Equal("alice", stored.Username)
+	c.Equal("Alice", stored.DisplayName)
+	c.Equal(guest.ID, stored.PromoteUserID)
 }
 
 // --- CompletePromote ---
@@ -161,11 +161,11 @@ func TestCompletePromote_HappyPath(t *testing.T) {
 	guestTok, _ := h.guests.Create(context.Background(), guest.ID)
 
 	payload, err := json.Marshal(registrationSession{
-		UserID:         guest.ID,
-		Session:        pkwebauthn.SessionData{UserID: []byte("handle")},
-		Promote:        true,
-		PromoteName:    "alice",
-		PromoteDisplay: "Alice",
+		Session:       pkwebauthn.SessionData{UserID: []byte("handle")},
+		Username:      "alice",
+		DisplayName:   "Alice",
+		PromoteUserID: guest.ID,
+		Promote:       true,
 	})
 	c.NoError(err)
 	c.NoError(h.chal.Save(context.Background(), "sess-p", payload))
@@ -226,8 +226,9 @@ func TestCompletePromote_RefusesNonPromoteSession(t *testing.T) {
 
 	// Session was minted as a regular register, not a promote.
 	payload, err := json.Marshal(registrationSession{
-		UserID:  uuid.New(),
-		Session: pkwebauthn.SessionData{UserID: []byte("handle")},
+		Session:     pkwebauthn.SessionData{UserID: []byte("handle")},
+		Username:    "x",
+		DisplayName: "X",
 	})
 	c.NoError(err)
 	c.NoError(h.chal.Save(context.Background(), "sess-r", payload))
@@ -248,9 +249,11 @@ func TestCompleteRegister_RefusesPromoteSession(t *testing.T) {
 
 	// Symmetric guard: /register/complete must reject a promote session.
 	payload, err := json.Marshal(registrationSession{
-		UserID:  uuid.New(),
-		Session: pkwebauthn.SessionData{UserID: []byte("handle")},
-		Promote: true,
+		Session:       pkwebauthn.SessionData{UserID: []byte("handle")},
+		Username:      "x",
+		DisplayName:   "X",
+		PromoteUserID: uuid.New(),
+		Promote:       true,
 	})
 	c.NoError(err)
 	c.NoError(h.chal.Save(context.Background(), "sess-cross", payload))
@@ -278,11 +281,11 @@ func TestCompletePromote_UsernameTaken(t *testing.T) {
 	guestTok, _ := h.guests.Create(context.Background(), guest.ID)
 
 	payload, err := json.Marshal(registrationSession{
-		UserID:         guest.ID,
-		Session:        pkwebauthn.SessionData{UserID: []byte("handle")},
-		Promote:        true,
-		PromoteName:    "alice",
-		PromoteDisplay: "Alice",
+		Session:       pkwebauthn.SessionData{UserID: []byte("handle")},
+		Username:      "alice",
+		DisplayName:   "Alice",
+		PromoteUserID: guest.ID,
+		Promote:       true,
 	})
 	c.NoError(err)
 	c.NoError(h.chal.Save(context.Background(), "sess-conflict", payload))

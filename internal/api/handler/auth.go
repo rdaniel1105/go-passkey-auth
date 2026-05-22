@@ -22,6 +22,7 @@ type userStore interface {
 	CreateRegistered(ctx context.Context, username, displayName string) (*domain.User, error)
 	CreateGuest(ctx context.Context, username, displayName string) (*domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+	GetByUsername(ctx context.Context, username string) (*domain.User, error)
 	PromoteGuest(ctx context.Context, id uuid.UUID, username, displayName string) (*domain.User, error)
 }
 
@@ -97,19 +98,23 @@ type AuthHandler struct {
 
 // registrationSession is the payload stored in the challenge store between
 // /register/begin and /register/complete (or /promote/begin and
-// /promote/complete). It bundles the library's SessionData with our
-// internal user UUID so /complete can find the already-created user row
-// without trusting any client-provided id.
+// /promote/complete).
 //
-// Promote = true marks a session originated from /promote/begin. The
-// matching /promote/complete refuses the session if it was not, and vice
-// versa, so a client cannot cross-flow.
+// For plain registration: only Username + DisplayName are set. The user row
+// is created at /complete so an abandoned ceremony does not leave a ghost
+// row blocking the username forever.
+//
+// For promotion: PromoteUserID points at the existing guest row, and
+// Username + DisplayName carry the chosen registered identity. Promote =
+// true; /register/complete refuses Promote=true sessions and
+// /promote/complete refuses Promote=false ones, so a client cannot
+// cross-flow.
 type registrationSession struct {
-	UserID         uuid.UUID              `json:"user_id"`
-	Session        pkwebauthn.SessionData `json:"session"`
-	Promote        bool                   `json:"promote,omitempty"`
-	PromoteName    string                 `json:"promote_name,omitempty"`
-	PromoteDisplay string                 `json:"promote_display,omitempty"`
+	Session       pkwebauthn.SessionData `json:"session"`
+	Username      string                 `json:"username"`
+	DisplayName   string                 `json:"display_name"`
+	PromoteUserID uuid.UUID              `json:"promote_user_id,omitempty"`
+	Promote       bool                   `json:"promote,omitempty"`
 }
 
 type beginRegisterRequest struct {
@@ -173,11 +178,15 @@ func NewAuth(deps AuthDeps) *AuthHandler {
 //
 // Flow:
 //  1. Validate the request body (username + display_name).
-//  2. Insert a fresh registered user row.
+//  2. Cheap availability check via GetByUsername — surface a 409 *before*
+//     the authenticator prompt so the user isn't asked to do a Touch ID
+//     for a name they can't have.
 //  3. Generate an opaque 64-byte WebAuthn user handle (NOT the user UUID).
 //  4. Ask the webauthn service to build CreationOptions + SessionData.
-//  5. Persist SessionData + our user UUID in the challenge store keyed by
-//     a fresh session id (one-shot consume on /complete).
+//  5. Persist SessionData + the chosen username/display_name in the
+//     challenge store keyed by a fresh session id (one-shot consume on
+//     /complete). NO user row is created here — that happens at /complete
+//     so an abandoned ceremony doesn't leave a ghost row.
 //  6. Return the CreationOptions to the client.
 func (h *AuthHandler) BeginRegister(w http.ResponseWriter, r *http.Request) {
 	var req beginRegisterRequest
@@ -191,14 +200,17 @@ func (h *AuthHandler) BeginRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.users.CreateRegistered(r.Context(), req.Username, req.DisplayName)
-	if errors.Is(err, domain.ErrUsernameTaken) {
+	// Availability hint: returning here gives a fast 409 in the common
+	// case. It does NOT guard against the race between two concurrent
+	// /begin calls; the real guard is CreateRegistered at /complete.
+	switch _, err := h.users.GetByUsername(r.Context(), req.Username); {
+	case err == nil:
 		writeError(w, h.logger, http.StatusConflict, "username_taken")
 		return
-	}
-
-	if err != nil {
-		h.logger.Error("register: create user", "err", err)
+	case errors.Is(err, domain.ErrUserNotFound):
+		// expected — username is free
+	default:
+		h.logger.Error("register: lookup username", "err", err)
 		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
 		return
 	}
@@ -219,8 +231,8 @@ func (h *AuthHandler) BeginRegister(w http.ResponseWriter, r *http.Request) {
 
 	waUser := &pkwebauthn.User{
 		Handle:      handle,
-		Name:        user.Username,
-		DisplayName: user.DisplayName,
+		Name:        req.Username,
+		DisplayName: req.DisplayName,
 	}
 
 	options, session, err := h.webauthn.BeginRegistration(waUser, sessionID)
@@ -231,8 +243,9 @@ func (h *AuthHandler) BeginRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload, err := json.Marshal(registrationSession{
-		UserID:  user.ID,
-		Session: *session,
+		Session:     *session,
+		Username:    req.Username,
+		DisplayName: req.DisplayName,
 	})
 	if err != nil {
 		h.logger.Error("register: marshal session", "err", err)
@@ -256,7 +269,9 @@ func (h *AuthHandler) BeginRegister(w http.ResponseWriter, r *http.Request) {
 //  2. Atomically GET+DEL the challenge session by id (replay protection).
 //  3. Parse the credential bytes via the webauthn service.
 //  4. Verify the attestation against the SessionData.
-//  5. Persist the credential row.
+//  5. CreateRegistered (the user row is born here, not at /begin, so an
+//     abandoned ceremony leaves no trace).
+//  6. Persist the credential row.
 func (h *AuthHandler) CompleteRegister(w http.ResponseWriter, r *http.Request) {
 	var req completeRegisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -295,17 +310,10 @@ func (h *AuthHandler) CompleteRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.users.GetByID(r.Context(), stored.UserID)
-	if err != nil {
-		h.logger.Error("register complete: get user", "err", err, "user_id", stored.UserID)
-		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
-		return
-	}
-
 	waUser := &pkwebauthn.User{
 		Handle:      []byte(stored.Session.UserID),
-		Name:        user.Username,
-		DisplayName: user.DisplayName,
+		Name:        stored.Username,
+		DisplayName: stored.DisplayName,
 	}
 
 	parsed, err := h.webauthn.ParseCredentialCreation(req.Credential)
@@ -327,7 +335,23 @@ func (h *AuthHandler) CompleteRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	domainCred, err := domainCredentialFromLib(stored.UserID, waUser.Handle, cred)
+	// User row is born here, after the authenticator has proven itself.
+	// A race with another /begin+/complete for the same name surfaces as
+	// ErrUsernameTaken — the second one loses, which is the correct
+	// outcome.
+	user, err := h.users.CreateRegistered(r.Context(), stored.Username, stored.DisplayName)
+	if errors.Is(err, domain.ErrUsernameTaken) {
+		writeError(w, h.logger, http.StatusConflict, "username_taken")
+		return
+	}
+
+	if err != nil {
+		h.logger.Error("register complete: create user", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	domainCred, err := domainCredentialFromLib(user.ID, waUser.Handle, cred)
 	if err != nil {
 		h.logger.Error("register complete: convert credential", "err", err)
 		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
@@ -671,11 +695,11 @@ func (h *AuthHandler) BeginPromote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload, err := json.Marshal(registrationSession{
-		UserID:         guest.ID,
-		Session:        *session,
-		Promote:        true,
-		PromoteName:    req.Username,
-		PromoteDisplay: req.DisplayName,
+		Session:       *session,
+		Username:      req.Username,
+		DisplayName:   req.DisplayName,
+		PromoteUserID: guest.ID,
+		Promote:       true,
 	})
 	if err != nil {
 		h.logger.Error("promote: marshal session", "err", err)
@@ -742,8 +766,8 @@ func (h *AuthHandler) CompletePromote(w http.ResponseWriter, r *http.Request) {
 
 	waUser := &pkwebauthn.User{
 		Handle:      []byte(stored.Session.UserID),
-		Name:        stored.PromoteName,
-		DisplayName: stored.PromoteDisplay,
+		Name:        stored.Username,
+		DisplayName: stored.DisplayName,
 	}
 
 	parsed, err := h.webauthn.ParseCredentialCreation(req.Credential)
@@ -765,7 +789,7 @@ func (h *AuthHandler) CompletePromote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	promoted, err := h.users.PromoteGuest(r.Context(), stored.UserID, stored.PromoteName, stored.PromoteDisplay)
+	promoted, err := h.users.PromoteGuest(r.Context(), stored.PromoteUserID, stored.Username, stored.DisplayName)
 	if errors.Is(err, domain.ErrUsernameTaken) {
 		writeError(w, h.logger, http.StatusConflict, "username_taken")
 		return

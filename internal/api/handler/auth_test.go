@@ -28,6 +28,8 @@ type fakeUserStore struct {
 	users map[uuid.UUID]*domain.User
 	// nextErr, if set, is returned by the next CreateRegistered call.
 	nextErr error
+	// lookupErr, if set, is returned by every GetByUsername call until cleared.
+	lookupErr error
 }
 
 func newFakeUserStore() *fakeUserStore {
@@ -66,6 +68,23 @@ func (s *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (*domain.User, 
 	}
 
 	return u, nil
+}
+
+func (s *fakeUserStore) GetByUsername(_ context.Context, username string) (*domain.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lookupErr != nil {
+		return nil, s.lookupErr
+	}
+
+	for _, u := range s.users {
+		if !u.IsGuest && u.Username == username {
+			return u, nil
+		}
+	}
+
+	return nil, domain.ErrUserNotFound
 }
 
 func (s *fakeUserStore) CreateGuest(_ context.Context, username, display string) (*domain.User, error) {
@@ -493,16 +512,48 @@ func TestBeginRegister_HappyPath(t *testing.T) {
 	})
 	c.Equal(http.StatusOK, rr.Code)
 
-	// User row created.
-	c.Len(h.users.users, 1)
+	// User row is NOT created at /begin anymore — that happens at /complete
+	// so an abandoned ceremony does not leave a ghost row.
+	c.Empty(h.users.users)
 
-	// Challenge session persisted.
+	// Challenge session persisted with the chosen identity.
 	c.Len(h.chal.entries, 1)
 
-	// WebAuthn called with the opaque handle, not the user UUID.
+	var stored registrationSession
+	for _, payload := range h.chal.entries {
+		c.NoError(json.Unmarshal(payload, &stored))
+	}
+	c.Equal("alice", stored.Username)
+	c.Equal("Alice", stored.DisplayName)
+	c.False(stored.Promote)
+
+	// WebAuthn called with the opaque handle and the chosen username.
 	c.NotNil(h.wa.lastBeginUser)
 	c.Len(h.wa.lastBeginUser.Handle, pkwebauthn.UserHandleSize)
 	c.Equal("alice", h.wa.lastBeginUser.Name)
+}
+
+// TestBeginRegister_AbandonedCeremonyAllowsRetry is the regression test for
+// the ghost-user bug: /begin without a follow-up /complete must NOT block
+// the next /begin with the same username.
+func TestBeginRegister_AbandonedCeremonyAllowsRetry(t *testing.T) {
+	c := require.New(t)
+
+	h := newTestHandler(t)
+
+	body := map[string]string{"username": "alice", "display_name": "Alice"}
+
+	// User clicks Register, the browser pops a prompt...
+	rr := postJSON(h.handler.BeginRegister, body)
+	c.Equal(http.StatusOK, rr.Code)
+
+	// ...and closes the prompt without confirming. No /complete is sent.
+	// The challenge expires (we don't model TTL in tests, but the failure
+	// mode is the same: nothing to clean up on our side).
+
+	// A retry with the same username must succeed.
+	rr = postJSON(h.handler.BeginRegister, body)
+	c.Equal(http.StatusOK, rr.Code)
 }
 
 func TestBeginRegister_InvalidJSON(t *testing.T) {
@@ -534,12 +585,12 @@ func TestBeginRegister_UsernameTaken(t *testing.T) {
 
 	h := newTestHandler(t)
 
-	// First call succeeds.
-	rr := postJSON(h.handler.BeginRegister, map[string]string{"username": "bob", "display_name": "Bob"})
-	c.Equal(http.StatusOK, rr.Code)
+	// An existing registered user with that name shows up as 409 at /begin
+	// — the cheap availability check before the authenticator prompt.
+	_, err := h.users.CreateRegistered(context.Background(), "bob", "Bob")
+	c.NoError(err)
 
-	// Second call with same username -> 409.
-	rr = postJSON(h.handler.BeginRegister, map[string]string{"username": "bob", "display_name": "Bob"})
+	rr := postJSON(h.handler.BeginRegister, map[string]string{"username": "bob", "display_name": "Bob"})
 	c.Equal(http.StatusConflict, rr.Code)
 	c.Equal("username_taken", decodeError(t, rr).Code)
 }
@@ -548,7 +599,7 @@ func TestBeginRegister_UserStoreError(t *testing.T) {
 	c := require.New(t)
 
 	h := newTestHandler(t)
-	h.users.nextErr = errors.New("db down")
+	h.users.lookupErr = errors.New("db down")
 
 	rr := postJSON(h.handler.BeginRegister, map[string]string{"username": "carol", "display_name": "Carol"})
 
@@ -601,26 +652,26 @@ func TestCompleteRegister_SessionConsumedOnceOnly(t *testing.T) {
 
 	h := newTestHandler(t)
 
-	// Seed a stored registration session.
-	userID := uuid.New()
+	// Seed a stored registration session. The user row is created at
+	// /complete now, so we only need the chosen username + display_name.
 	payload, err := json.Marshal(registrationSession{
-		UserID:  userID,
-		Session: pkwebauthn.SessionData{Challenge: "x", UserID: []byte("handle")},
+		Session:     pkwebauthn.SessionData{Challenge: "x", UserID: []byte("handle")},
+		Username:    "abandoned",
+		DisplayName: "Abandoned",
 	})
 	c.NoError(err)
 	c.NoError(h.chal.Save(context.Background(), "sess-x", payload))
 
-	// We don't have a real credential JSON, so the first call will fail at
-	// parse — but the important thing is that the challenge was consumed.
-	rr := postJSON(h.handler.CompleteRegister, map[string]any{
+	// The first call consumes the challenge (it may succeed or fail at
+	// later steps; what matters here is that the session id is now spent).
+	postJSON(h.handler.CompleteRegister, map[string]any{
 		"session_id": "sess-x",
 		"credential": json.RawMessage(`{"id":"not real"}`),
 	})
-	c.NotEqual(http.StatusOK, rr.Code) // any non-2xx is fine here
 
-	// Second attempt against the same session id must now report
+	// Second attempt against the same session id must report
 	// session_invalid — replay protection.
-	rr = postJSON(h.handler.CompleteRegister, map[string]any{
+	rr := postJSON(h.handler.CompleteRegister, map[string]any{
 		"session_id": "sess-x",
 		"credential": json.RawMessage(`{}`),
 	})
