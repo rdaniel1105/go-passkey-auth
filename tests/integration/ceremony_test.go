@@ -391,7 +391,7 @@ func TestCeremony_FullRegistrationAndLogin(t *testing.T) {
 	loginBody := decodeBody[map[string]string](t, res.body)
 	c.Equal("alice", loginBody["username"])
 
-	// HttpOnly cookie set; the token is NOT in the JSON body (PRD §13).
+	// HttpOnly cookie set; the token is NOT in the JSON body.
 	sessionCookie := findCookie(t, client, srv, handler.SessionCookieName)
 	c.NotNil(sessionCookie)
 	c.NotEmpty(sessionCookie.Value)

@@ -22,7 +22,8 @@ type User struct {
 
 // Credential is a single registered passkey. WebAuthnUserHandle is the
 // opaque per-registration handle that was sent to the authenticator as
-// user.id; it is NOT the user UUID. See PRD §7.
+// user.id; it is NOT the user UUID. Using the UUID would leak a stable
+// internal identifier through the authenticator.
 //
 // Two attestation columns track the two axes WebAuthn separates:
 //   - AttestationFormat is the wire format ("none", "packed", "tpm",

@@ -1,6 +1,6 @@
 package webauthn
 
-// Attestation policy, per PRD §7.
+// Attestation policy.
 //
 // The WebAuthn spec defines several attestation formats: "none", "packed",
 // "tpm", "android-key", "android-safetynet", "fido-u2f", and "apple". Each
@@ -28,8 +28,7 @@ package webauthn
 // will accept on FinishRegistration. The library verifies each format's
 // signature independently; this list is the policy layer above it.
 //
-// "none" and "packed" are the two formats called out in the PRD. "packed"
-// covers most hardware security keys (YubiKey, Titan) and is the closest
+// "packed" covers most hardware security keys (YubiKey, Titan) and is the closest
 // thing to a standard. The others are accepted because rejecting them
 // would break legitimate authenticators (e.g. Android phones can return
 // "android-key" or "android-safetynet"). If future policy needs to restrict

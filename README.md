@@ -117,7 +117,7 @@ These are the calls that separate a real WebAuthn implementation from a tutorial
 
 **Resident keys / user verification: `preferred`, not `required`.** `required` breaks authenticators that don't support it. `preferred` gets us discoverable credentials and biometric UV when available without hard failures elsewhere.
 
-**Conditional UI.** The demo client calls `navigator.credentials.get` with `mediation: "conditional"` on page load, and the username input has `autocomplete="username webauthn"`. On supported browsers (Safari 16+, Chrome 108+), passkeys surface in the autofill chip without a click.
+**Conditional UI.** The demo client calls `navigator.credentials.get` with `mediation: "conditional"` on page load, and the username input has `autocomplete="username webauthn"`. On supported browsers (Safari 16+, Chrome 108+), passkeys surface in the autofill chip without a click. This is the UX that makes passkeys feel native instead of bolted on.
 
 **Opaque per-registration WebAuthn user handle.** The `user.id` sent to the authenticator is a fresh 64-byte random handle, stored on the credential row. **Not** the user's UUID — the WebAuthn handle is persisted on the authenticator and can be enumerated from it; using the DB UUID would leak a stable internal identifier.
 

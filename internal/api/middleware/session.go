@@ -16,7 +16,7 @@ import (
 
 // SessionCookieName is the name of the HttpOnly cookie carrying the opaque
 // session token. The token is never returned in any JSON body; it lives
-// only in this cookie. See PRD §13.
+// only in this cookie.
 const SessionCookieName = "passkey_session"
 
 // SessionStore is the slice of the session store the auth middleware needs.

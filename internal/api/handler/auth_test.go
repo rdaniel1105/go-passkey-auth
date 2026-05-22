@@ -761,7 +761,7 @@ func TestCompleteLogin_HappyPath(t *testing.T) {
 	c.True(sessionCookie.HttpOnly)
 	c.Equal(http.SameSiteLaxMode, sessionCookie.SameSite)
 
-	// JSON body does NOT contain the token (PRD §13).
+	// JSON body does NOT contain the token — it lives only in the cookie.
 	c.NotContains(rr.Body.String(), sessionCookie.Value)
 
 	// Counter and flags updated.

@@ -167,9 +167,9 @@ type AssertionOptions struct {
 
 // BeginLogin starts a discoverable (passkey) login ceremony. The browser is
 // expected to call navigator.credentials.get with mediation: "conditional"
-// for autofill UX (PRD §7), or mediation: "required" for an explicit click.
-// Either way, the server-side options are the same — the mediation flag is
-// a client concern.
+// for autofill UX, or mediation: "required" for an explicit click. Either
+// way, the server-side options are the same — the mediation flag is a
+// client concern.
 //
 // The returned SessionData must be persisted (via ChallengeStore.Save)
 // under SessionID so it can be retrieved on /complete.

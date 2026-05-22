@@ -431,10 +431,10 @@ func (h *AuthHandler) BeginLogin(w http.ResponseWriter, r *http.Request) {
 //  3. Parse the assertion response.
 //  4. Validate via webauthn.ValidateLogin, resolving the user via a callback
 //     that hits credentialStore.GetByCredentialID and userStore.GetByID.
-//  5. Apply sign-count and AAGUID anomaly logging (PRD §7).
+//  5. Apply sign-count and AAGUID anomaly logging.
 //  6. UpdateAfterAssertion writes the new counter and BE/BS flags.
 //  7. Issue a session token, write it to the HttpOnly cookie. The token is
-//     NEVER returned in the JSON body (PRD §13).
+//     NEVER returned in the JSON body.
 func (h *AuthHandler) CompleteLogin(w http.ResponseWriter, r *http.Request) {
 	var req completeLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -544,11 +544,12 @@ func (h *AuthHandler) CompleteLogin(w http.ResponseWriter, r *http.Request) {
 
 	setSessionCookie(w, r, token, h.sessionMaxAge)
 
-	// Guest-session merging on first authentication (PRD §13). If the
-	// request arrives with a guest cookie, the user has just authenticated
-	// as a registered user — drop the guest token and clear the cookie.
+	// Guest-session merging on first authentication. If the request
+	// arrives with a guest cookie, the user has just authenticated as a
+	// registered user — drop the guest token and clear the cookie.
 	// "Guest-owned state" beyond the user row does not exist in this MVP,
-	// so the merge is effectively just this cleanup.
+	// so the merge is effectively just this cleanup; the seam is here for
+	// future state to be folded in.
 	if gc, err := r.Cookie(GuestCookieName); err == nil && gc.Value != "" {
 		if err := h.guests.Delete(r.Context(), gc.Value); err != nil {
 			h.logger.Warn("login complete: delete guest", "err", err)
@@ -849,9 +850,10 @@ func (h *AuthHandler) resolveGuest(r *http.Request) (*domain.User, bool) {
 }
 
 // recordCounterAnomalies emits structured warnings for the security events
-// PRD §7 calls out. The actual rejection of new < stored is enforced by the
-// library before we get here; what we add is visibility on the *unusual*
-// cases that the library accepts but a human should know about.
+// that matter on a passkey assertion: counter reset, AAGUID mismatch, and
+// backup-flag flip. The actual rejection of new < stored is enforced by
+// the library before we get here; what we add is visibility on the
+// *unusual* cases that the library accepts but a human should know about.
 func (h *AuthHandler) recordCounterAnomalies(stored *domain.Credential, asserted *pkwebauthn.Credential) {
 	newCount := asserted.Authenticator.SignCount
 

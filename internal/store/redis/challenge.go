@@ -26,7 +26,9 @@ type ChallengeStore struct {
 }
 
 // NewChallengeStore returns a ChallengeStore that writes keys with the given
-// TTL. The TTL should be short (5 minutes per PRD).
+// TTL. The TTL should be short (5 minutes is the default elsewhere in the
+// service) so a forgotten challenge can't be replayed long after it was
+// issued.
 func NewChallengeStore(client *redis.Client, ttl time.Duration) *ChallengeStore {
 	return &ChallengeStore{client: client, ttl: ttl}
 }

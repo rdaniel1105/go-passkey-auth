@@ -14,7 +14,9 @@ const UserHandleSize = 64
 
 // NewUserHandle returns a freshly generated, cryptographically random user
 // handle. This is the value sent to the authenticator as user.id during
-// registration — NOT the internal user UUID. See PRD §7.
+// registration — NOT the internal user UUID. The WebAuthn user handle is
+// persisted on the authenticator and can be enumerated from it; using the
+// DB UUID would leak a stable internal identifier.
 func NewUserHandle() ([]byte, error) {
 	b := make([]byte, UserHandleSize)
 	if _, err := rand.Read(b); err != nil {

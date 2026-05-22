@@ -6,7 +6,7 @@
 --                                     user.id to the authenticator. NOT the
 --                                     internal user UUID -- using the UUID
 --                                     leaks a stable identifier from the
---                                     authenticator. See PRD §7.
+--                                     authenticator.
 --   credentials.backup_eligible / _state
 --                                     The BE and BS flags from the
 --                                     authenticator data. Persisted and

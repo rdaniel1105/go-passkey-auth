@@ -15,10 +15,11 @@ const SessionCookieName = middleware.SessionCookieName
 // token (and vice versa).
 const GuestCookieName = "passkey_guest"
 
-// setSessionCookie writes the session cookie with the security flags PRD
-// §13 calls for. Secure is on when the request looks like HTTPS so the
-// cookie is rejected over plain HTTP in prod; local http://localhost dev
-// still works because browsers exempt it.
+// setSessionCookie writes the session cookie. HttpOnly + SameSite=Lax is
+// what keeps the token from being readable by JS or sent on cross-site
+// requests. Secure is on when the request looks like HTTPS so the cookie
+// is rejected over plain HTTP in prod; local http://localhost dev still
+// works because browsers exempt it.
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string, maxAgeSeconds int) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
@@ -60,8 +61,8 @@ func setGuestCookie(w http.ResponseWriter, r *http.Request, token string, maxAge
 }
 
 // clearGuestCookie expires the guest cookie. Used after a successful
-// promotion or login as a registered user (PRD §13 — guest-session
-// merging on first authentication).
+// promotion or login as a registered user — the guest session is folded
+// into the now-authenticated user and the cookie has no more purpose.
 func clearGuestCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     GuestCookieName,

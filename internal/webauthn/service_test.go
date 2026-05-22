@@ -44,11 +44,12 @@ func TestBeginRegistration_OptionsShape(t *testing.T) {
 	c.Equal("localhost", out.Options.RelyingParty.ID)
 	c.Equal("go-passkey-auth", out.Options.RelyingParty.Name)
 
-	// PRD §7: residentKey and userVerification must be "preferred", not "required".
+	// residentKey and userVerification must be "preferred", not "required",
+	// to maximise authenticator compatibility.
 	c.Equal(protocol.ResidentKeyRequirementPreferred, out.Options.AuthenticatorSelection.ResidentKey)
 	c.Equal(protocol.VerificationPreferred, out.Options.AuthenticatorSelection.UserVerification)
 
-	// PRD §7: attestation preference is "none" (best compatibility).
+	// Attestation preference is "none" (best compatibility with consumer passkeys).
 	c.Equal(protocol.PreferNoAttestation, out.Options.Attestation)
 
 	// The opaque user handle, not the user's UUID, is what the authenticator sees.

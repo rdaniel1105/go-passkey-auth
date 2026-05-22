@@ -1,7 +1,7 @@
-// Package webauthn wraps github.com/go-webauthn/webauthn with the spec
-// decisions documented in PRD §7: opaque user handles, residentKey/UV
-// preferred (not required), `none` attestation preferred, and explicit
-// origin allowlisting.
+// Package webauthn wraps github.com/go-webauthn/webauthn with the
+// service's spec decisions: opaque user handles (not the user UUID),
+// residentKey/UV preferred (not required), `none` attestation preferred,
+// and explicit origin allowlisting.
 package webauthn
 
 import (
@@ -39,7 +39,7 @@ var (
 // NewService constructs a Service from Config. Returns a sentinel error if
 // any required field is missing.
 //
-// Spec decisions baked in here, per PRD §7:
+// Spec decisions baked in here:
 //   - AttestationPreference = "none": maximises compatibility with consumer
 //     passkeys (iCloud Keychain, Google Password Manager, 1Password). The
 //     library still verifies whatever attestation format the authenticator
