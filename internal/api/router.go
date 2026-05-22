@@ -44,6 +44,9 @@ func New(deps Deps) http.Handler {
 			r.Post("/login/begin", deps.Auth.BeginLogin)
 			r.Post("/login/complete", deps.Auth.CompleteLogin)
 			r.Post("/logout", deps.Auth.Logout)
+			r.Post("/guest", deps.Auth.Guest)
+			r.Post("/promote/begin", deps.Auth.BeginPromote)
+			r.Post("/promote/complete", deps.Auth.CompletePromote)
 		})
 
 		r.Route("/users/me", func(r chi.Router) {

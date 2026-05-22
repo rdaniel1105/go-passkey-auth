@@ -79,7 +79,9 @@ func run(logger *slog.Logger) error {
 		Credentials:   credentialStore,
 		Challenges:    redisstore.NewChallengeStore(redisClient, cfg.ChallengeTTL),
 		Sessions:      sessionStore,
+		Guests:        redisstore.NewGuestStore(redisClient, cfg.GuestTTL),
 		SessionMaxAge: int(cfg.SessionTTL.Seconds()),
+		GuestMaxAge:   int(cfg.GuestTTL.Seconds()),
 	})
 
 	user := handler.NewUser(handler.UserDeps{

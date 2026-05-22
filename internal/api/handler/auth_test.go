@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -63,6 +64,40 @@ func (s *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (*domain.User, 
 	if !ok {
 		return nil, domain.ErrUserNotFound
 	}
+
+	return u, nil
+}
+
+func (s *fakeUserStore) CreateGuest(_ context.Context, username, display string) (*domain.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u := &domain.User{ID: uuid.New(), Username: username, DisplayName: display, IsGuest: true}
+	s.users[u.ID] = u
+
+	return u, nil
+}
+
+func (s *fakeUserStore) PromoteGuest(_ context.Context, id uuid.UUID, username, display string) (*domain.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.users[id]
+	if !ok || !u.IsGuest {
+		return nil, domain.ErrUserNotFound
+	}
+
+	for _, other := range s.users {
+		if other.ID != id && !other.IsGuest && other.Username == username {
+			return nil, domain.ErrUsernameTaken
+		}
+	}
+
+	u.Username = username
+	u.DisplayName = display
+	u.IsGuest = false
+	now := time.Now()
+	u.PromotedAt = &now
 
 	return u, nil
 }
@@ -344,6 +379,48 @@ func (s *fakeSessionStore) Delete(_ context.Context, token string) error {
 	return nil
 }
 
+type fakeGuestStore struct {
+	mu      sync.Mutex
+	tokens  map[string]uuid.UUID
+	created []string
+	deleted []string
+}
+
+func newFakeGuestStore() *fakeGuestStore {
+	return &fakeGuestStore{tokens: map[string]uuid.UUID{}}
+}
+
+func (s *fakeGuestStore) Create(_ context.Context, userID uuid.UUID) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	token := "gst-" + uuid.NewString()
+	s.tokens[token] = userID
+	s.created = append(s.created, token)
+	return token, nil
+}
+
+func (s *fakeGuestStore) Get(_ context.Context, token string) (uuid.UUID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id, ok := s.tokens[token]
+	if !ok {
+		return uuid.Nil, domain.ErrGuestNotFound
+	}
+
+	return id, nil
+}
+
+func (s *fakeGuestStore) Delete(_ context.Context, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.tokens, token)
+	s.deleted = append(s.deleted, token)
+	return nil
+}
+
 // --- helpers ---
 
 type testHarness struct {
@@ -352,6 +429,7 @@ type testHarness struct {
 	creds    *fakeCredentialStore
 	chal     *fakeChallengeStore
 	sessions *fakeSessionStore
+	guests   *fakeGuestStore
 	wa       *fakeWebAuthn
 }
 
@@ -363,6 +441,7 @@ func newTestHandler(t *testing.T) *testHarness {
 		creds:    newFakeCredentialStore(),
 		chal:     newFakeChallengeStore(),
 		sessions: newFakeSessionStore(),
+		guests:   newFakeGuestStore(),
 		wa:       &fakeWebAuthn{},
 	}
 
@@ -373,7 +452,9 @@ func newTestHandler(t *testing.T) *testHarness {
 		Credentials:   h.creds,
 		Challenges:    h.chal,
 		Sessions:      h.sessions,
+		Guests:        h.guests,
 		SessionMaxAge: 86400,
+		GuestMaxAge:   3600,
 	})
 
 	return h

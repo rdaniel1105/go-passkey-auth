@@ -20,7 +20,9 @@ import (
 // tests substitute a fake without dragging in the full pgx pool.
 type userStore interface {
 	CreateRegistered(ctx context.Context, username, displayName string) (*domain.User, error)
+	CreateGuest(ctx context.Context, username, displayName string) (*domain.User, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.User, error)
+	PromoteGuest(ctx context.Context, id uuid.UUID, username, displayName string) (*domain.User, error)
 }
 
 // credentialStore is the slice of CredentialStore the auth handler depends on.
@@ -40,6 +42,15 @@ type challengeStore interface {
 // sessionStore is the slice of SessionStore the auth handler depends on.
 type sessionStore interface {
 	Create(ctx context.Context, userID uuid.UUID) (string, error)
+	Delete(ctx context.Context, token string) error
+}
+
+// guestStore is the slice of GuestStore the auth handler depends on. Guest
+// tokens live in a separate redis namespace from session tokens — they
+// cannot cross-resolve.
+type guestStore interface {
+	Create(ctx context.Context, userID uuid.UUID) (string, error)
+	Get(ctx context.Context, token string) (uuid.UUID, error)
 	Delete(ctx context.Context, token string) error
 }
 
@@ -64,8 +75,11 @@ type AuthDeps struct {
 	Credentials credentialStore
 	Challenges  challengeStore
 	Sessions    sessionStore
+	Guests      guestStore
 	// SessionMaxAge is how long the issued session cookie lives.
 	SessionMaxAge int
+	// GuestMaxAge is how long the issued guest cookie lives.
+	GuestMaxAge int
 }
 
 // AuthHandler implements the /auth/* endpoints.
@@ -76,21 +90,40 @@ type AuthHandler struct {
 	credentials   credentialStore
 	challenges    challengeStore
 	sessions      sessionStore
+	guests        guestStore
 	sessionMaxAge int
+	guestMaxAge   int
 }
 
 // registrationSession is the payload stored in the challenge store between
-// /register/begin and /register/complete. It bundles the library's
-// SessionData with our internal user UUID so /complete can find the
-// already-created user row without trusting any client-provided id.
+// /register/begin and /register/complete (or /promote/begin and
+// /promote/complete). It bundles the library's SessionData with our
+// internal user UUID so /complete can find the already-created user row
+// without trusting any client-provided id.
+//
+// Promote = true marks a session originated from /promote/begin. The
+// matching /promote/complete refuses the session if it was not, and vice
+// versa, so a client cannot cross-flow.
 type registrationSession struct {
-	UserID  uuid.UUID              `json:"user_id"`
-	Session pkwebauthn.SessionData `json:"session"`
+	UserID         uuid.UUID              `json:"user_id"`
+	Session        pkwebauthn.SessionData `json:"session"`
+	Promote        bool                   `json:"promote,omitempty"`
+	PromoteName    string                 `json:"promote_name,omitempty"`
+	PromoteDisplay string                 `json:"promote_display,omitempty"`
 }
 
 type beginRegisterRequest struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+}
+
+type beginPromoteRequest struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
+type guestResponse struct {
+	UserID string `json:"user_id"`
 }
 
 type completeRegisterRequest struct {
@@ -130,7 +163,9 @@ func NewAuth(deps AuthDeps) *AuthHandler {
 		credentials:   deps.Credentials,
 		challenges:    deps.Challenges,
 		sessions:      deps.Sessions,
+		guests:        deps.Guests,
 		sessionMaxAge: deps.SessionMaxAge,
+		guestMaxAge:   deps.GuestMaxAge,
 	}
 }
 
@@ -250,6 +285,13 @@ func (h *AuthHandler) CompleteRegister(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(raw, &stored); err != nil {
 		h.logger.Error("register complete: unmarshal session", "err", err)
 		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if stored.Promote {
+		// Session was minted by /promote/begin — must go through
+		// /promote/complete. Refuse to handle it here.
+		writeError(w, h.logger, http.StatusUnauthorized, "session_invalid")
 		return
 	}
 
@@ -502,6 +544,19 @@ func (h *AuthHandler) CompleteLogin(w http.ResponseWriter, r *http.Request) {
 
 	setSessionCookie(w, r, token, h.sessionMaxAge)
 
+	// Guest-session merging on first authentication (PRD §13). If the
+	// request arrives with a guest cookie, the user has just authenticated
+	// as a registered user — drop the guest token and clear the cookie.
+	// "Guest-owned state" beyond the user row does not exist in this MVP,
+	// so the merge is effectively just this cleanup.
+	if gc, err := r.Cookie(GuestCookieName); err == nil && gc.Value != "" {
+		if err := h.guests.Delete(r.Context(), gc.Value); err != nil {
+			h.logger.Warn("login complete: delete guest", "err", err)
+		}
+
+		clearGuestCookie(w, r)
+	}
+
 	writeJSON(w, h.logger, http.StatusOK, completeLoginResponse{
 		UserID:      resolvedUser.ID.String(),
 		Username:    resolvedUser.Username,
@@ -520,6 +575,277 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 	clearSessionCookie(w, r)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Guest + promotion ---
+
+// Guest handles POST /auth/guest. Creates an anonymous user row, mints a
+// guest token, sets the guest cookie, and returns the new user id.
+//
+// If the request already has a guest cookie that resolves to a live user,
+// we reuse it instead of creating a new one — so repeated /guest calls
+// from the same browser stay idempotent.
+func (h *AuthHandler) Guest(w http.ResponseWriter, r *http.Request) {
+	if gc, err := r.Cookie(GuestCookieName); err == nil && gc.Value != "" {
+		if userID, err := h.guests.Get(r.Context(), gc.Value); err == nil {
+			if user, err := h.users.GetByID(r.Context(), userID); err == nil && user.IsGuest {
+				writeJSON(w, h.logger, http.StatusOK, guestResponse{UserID: user.ID.String()})
+				return
+			}
+		}
+	}
+
+	username := "guest-" + uuid.NewString()
+	user, err := h.users.CreateGuest(r.Context(), username, "Guest")
+	if err != nil {
+		h.logger.Error("guest: create user", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	token, err := h.guests.Create(r.Context(), user.ID)
+	if err != nil {
+		h.logger.Error("guest: mint token", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	setGuestCookie(w, r, token, h.guestMaxAge)
+	writeJSON(w, h.logger, http.StatusOK, guestResponse{UserID: user.ID.String()})
+}
+
+// BeginPromote handles POST /auth/promote/begin. Like BeginRegister, but
+// the user already exists (as a guest) — we keep their UUID, just ask the
+// authenticator to register a credential against an opaque handle. The
+// chosen username + display_name are persisted in the registration session
+// so /promote/complete can apply them inside PromoteGuest.
+func (h *AuthHandler) BeginPromote(w http.ResponseWriter, r *http.Request) {
+	var req beginPromoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	if req.Username == "" || req.DisplayName == "" {
+		writeError(w, h.logger, http.StatusBadRequest, "missing_fields")
+		return
+	}
+
+	guest, ok := h.resolveGuest(r)
+	if !ok {
+		writeError(w, h.logger, http.StatusUnauthorized, "guest_invalid")
+		return
+	}
+
+	if !guest.IsGuest {
+		writeError(w, h.logger, http.StatusConflict, "not_a_guest")
+		return
+	}
+
+	handle, err := pkwebauthn.NewUserHandle()
+	if err != nil {
+		h.logger.Error("promote: user handle", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	sessionID, err := newSessionID()
+	if err != nil {
+		h.logger.Error("promote: session id", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	waUser := &pkwebauthn.User{
+		Handle:      handle,
+		Name:        req.Username,
+		DisplayName: req.DisplayName,
+	}
+
+	options, session, err := h.webauthn.BeginRegistration(waUser, sessionID)
+	if err != nil {
+		h.logger.Error("promote: webauthn begin", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	payload, err := json.Marshal(registrationSession{
+		UserID:         guest.ID,
+		Session:        *session,
+		Promote:        true,
+		PromoteName:    req.Username,
+		PromoteDisplay: req.DisplayName,
+	})
+	if err != nil {
+		h.logger.Error("promote: marshal session", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if err := h.challenges.Save(r.Context(), sessionID, payload); err != nil {
+		h.logger.Error("promote: save challenge", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	writeJSON(w, h.logger, http.StatusOK, options)
+}
+
+// CompletePromote handles POST /auth/promote/complete.
+//
+// Flow:
+//  1. Decode envelope, take the challenge.
+//  2. Refuse cross-flow: the session must have been created by BeginPromote.
+//  3. Verify attestation against the stored SessionData.
+//  4. PromoteGuest — atomic check that the row is still a guest. Returns
+//     ErrUsernameTaken if someone claimed the username concurrently.
+//  5. Insert the credential.
+//  6. Clear the guest cookie, issue a session cookie. The user is logged
+//     in immediately, the same way /login/complete leaves them.
+func (h *AuthHandler) CompletePromote(w http.ResponseWriter, r *http.Request) {
+	var req completeRegisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	if req.SessionID == "" || len(req.Credential) == 0 {
+		writeError(w, h.logger, http.StatusBadRequest, "missing_fields")
+		return
+	}
+
+	raw, err := h.challenges.Take(r.Context(), req.SessionID)
+	if errors.Is(err, domain.ErrChallengeNotFound) {
+		writeError(w, h.logger, http.StatusUnauthorized, "session_invalid")
+		return
+	}
+
+	if err != nil {
+		h.logger.Error("promote complete: take challenge", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	var stored registrationSession
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		h.logger.Error("promote complete: unmarshal session", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if !stored.Promote {
+		// Session was minted by /register/begin — refuse to handle it here.
+		writeError(w, h.logger, http.StatusUnauthorized, "session_invalid")
+		return
+	}
+
+	waUser := &pkwebauthn.User{
+		Handle:      []byte(stored.Session.UserID),
+		Name:        stored.PromoteName,
+		DisplayName: stored.PromoteDisplay,
+	}
+
+	parsed, err := h.webauthn.ParseCredentialCreation(req.Credential)
+	if err != nil {
+		h.logger.Warn("promote complete: parse credential", "err", err)
+		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	cred, err := h.webauthn.CreateCredential(waUser, stored.Session, parsed)
+	if errors.Is(err, pkwebauthn.ErrAttestationNotAccepted) {
+		writeError(w, h.logger, http.StatusBadRequest, "attestation_rejected")
+		return
+	}
+
+	if err != nil {
+		h.logger.Warn("promote complete: verify attestation", "err", err)
+		writeError(w, h.logger, http.StatusBadRequest, "invalid_request")
+		return
+	}
+
+	promoted, err := h.users.PromoteGuest(r.Context(), stored.UserID, stored.PromoteName, stored.PromoteDisplay)
+	if errors.Is(err, domain.ErrUsernameTaken) {
+		writeError(w, h.logger, http.StatusConflict, "username_taken")
+		return
+	}
+
+	if errors.Is(err, domain.ErrUserNotFound) {
+		// Either the user was deleted or they're no longer a guest.
+		writeError(w, h.logger, http.StatusConflict, "not_a_guest")
+		return
+	}
+
+	if err != nil {
+		h.logger.Error("promote complete: promote user", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	domainCred, err := domainCredentialFromLib(promoted.ID, waUser.Handle, cred)
+	if err != nil {
+		h.logger.Error("promote complete: convert credential", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if _, err := h.credentials.Insert(r.Context(), domainCred); err != nil {
+		if errors.Is(err, domain.ErrCredentialExists) {
+			writeError(w, h.logger, http.StatusConflict, "credential_exists")
+			return
+		}
+
+		h.logger.Error("promote complete: insert credential", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	token, err := h.sessions.Create(r.Context(), promoted.ID)
+	if err != nil {
+		h.logger.Error("promote complete: create session", "err", err)
+		writeError(w, h.logger, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	// Drop the guest token + cookie now that the user is registered and
+	// holding a real session cookie.
+	if gc, err := r.Cookie(GuestCookieName); err == nil && gc.Value != "" {
+		if err := h.guests.Delete(r.Context(), gc.Value); err != nil {
+			h.logger.Warn("promote complete: delete guest", "err", err)
+		}
+
+		clearGuestCookie(w, r)
+	}
+
+	setSessionCookie(w, r, token, h.sessionMaxAge)
+
+	writeJSON(w, h.logger, http.StatusOK, completeLoginResponse{
+		UserID:      promoted.ID.String(),
+		Username:    promoted.Username,
+		DisplayName: promoted.DisplayName,
+	})
+}
+
+// resolveGuest reads the guest cookie and returns the user row it points
+// to. The boolean is false on any failure (no cookie, expired token,
+// deleted user, store error).
+func (h *AuthHandler) resolveGuest(r *http.Request) (*domain.User, bool) {
+	gc, err := r.Cookie(GuestCookieName)
+	if err != nil || gc.Value == "" {
+		return nil, false
+	}
+
+	userID, err := h.guests.Get(r.Context(), gc.Value)
+	if err != nil {
+		return nil, false
+	}
+
+	user, err := h.users.GetByID(r.Context(), userID)
+	if err != nil {
+		return nil, false
+	}
+
+	return user, true
 }
 
 // recordCounterAnomalies emits structured warnings for the security events

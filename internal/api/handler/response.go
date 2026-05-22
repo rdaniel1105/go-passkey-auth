@@ -32,6 +32,8 @@ var codeMessages = map[string]string{
 	"unauthorized":         "Authentication required.",
 	"not_found":            "Resource not found.",
 	"last_credential":      "Cannot delete the last passkey. Register another one first.",
+	"guest_invalid":        "Guest session is invalid or has expired.",
+	"not_a_guest":          "This account has already been registered.",
 	"internal_error":       "Internal server error.",
 }
 
