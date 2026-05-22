@@ -1,11 +1,14 @@
 package handler
 
-import "net/http"
+import (
+	"net/http"
 
-// SessionCookieName is the name of the HttpOnly cookie that carries the
-// opaque session token. PRD §13: the token is never returned in the JSON
-// body — only in this cookie.
-const SessionCookieName = "passkey_session"
+	"github.com/rdaniel1105/go-passkey-auth/internal/api/middleware"
+)
+
+// SessionCookieName is re-exported here so handler tests can reference it
+// without importing middleware just for the constant.
+const SessionCookieName = middleware.SessionCookieName
 
 // setSessionCookie writes the session cookie with the security flags PRD
 // §13 calls for. Secure is on when the request looks like HTTPS so the

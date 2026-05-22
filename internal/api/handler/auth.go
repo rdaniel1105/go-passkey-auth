@@ -79,19 +79,6 @@ type AuthHandler struct {
 	sessionMaxAge int
 }
 
-// NewAuth constructs an AuthHandler from its dependencies.
-func NewAuth(deps AuthDeps) *AuthHandler {
-	return &AuthHandler{
-		logger:        deps.Logger,
-		webauthn:      deps.WebAuthn,
-		users:         deps.Users,
-		credentials:   deps.Credentials,
-		challenges:    deps.Challenges,
-		sessions:      deps.Sessions,
-		sessionMaxAge: deps.SessionMaxAge,
-	}
-}
-
 // registrationSession is the payload stored in the challenge store between
 // /register/begin and /register/complete. It bundles the library's
 // SessionData with our internal user UUID so /complete can find the
@@ -104,6 +91,47 @@ type registrationSession struct {
 type beginRegisterRequest struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
+}
+
+type completeRegisterRequest struct {
+	SessionID  string          `json:"session_id"`
+	Credential json.RawMessage `json:"credential"`
+}
+
+type completeRegisterResponse struct {
+	CredentialID string `json:"credential_id"`
+}
+
+// loginSession is the payload stored in the challenge store between
+// /login/begin and /login/complete. We only need the library SessionData
+// because the user is unknown until the authenticator responds (that's
+// the whole point of discoverable login).
+type loginSession struct {
+	Session pkwebauthn.SessionData `json:"session"`
+}
+
+type completeLoginRequest struct {
+	SessionID  string          `json:"session_id"`
+	Credential json.RawMessage `json:"credential"`
+}
+
+type completeLoginResponse struct {
+	UserID      string `json:"user_id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+}
+
+// NewAuth constructs an AuthHandler from its dependencies.
+func NewAuth(deps AuthDeps) *AuthHandler {
+	return &AuthHandler{
+		logger:        deps.Logger,
+		webauthn:      deps.WebAuthn,
+		users:         deps.Users,
+		credentials:   deps.Credentials,
+		challenges:    deps.Challenges,
+		sessions:      deps.Sessions,
+		sessionMaxAge: deps.SessionMaxAge,
+	}
 }
 
 // BeginRegister handles POST /auth/register/begin.
@@ -184,15 +212,6 @@ func (h *AuthHandler) BeginRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, options)
-}
-
-type completeRegisterRequest struct {
-	SessionID  string          `json:"session_id"`
-	Credential json.RawMessage `json:"credential"`
-}
-
-type completeRegisterResponse struct {
-	CredentialID string `json:"credential_id"`
 }
 
 // CompleteRegister handles POST /auth/register/complete.
@@ -325,14 +344,6 @@ func domainCredentialFromLib(userID uuid.UUID, handle []byte, cred *pkwebauthn.C
 
 // --- Login ---
 
-// loginSession is the payload stored in the challenge store between
-// /login/begin and /login/complete. We only need the library SessionData
-// because the user is unknown until the authenticator responds (that's
-// the whole point of discoverable login).
-type loginSession struct {
-	Session pkwebauthn.SessionData `json:"session"`
-}
-
 // BeginLogin handles POST /auth/login/begin.
 //
 // No request body is required — discoverable login does not specify a user
@@ -368,17 +379,6 @@ func (h *AuthHandler) BeginLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, options)
-}
-
-type completeLoginRequest struct {
-	SessionID  string          `json:"session_id"`
-	Credential json.RawMessage `json:"credential"`
-}
-
-type completeLoginResponse struct {
-	UserID      string `json:"user_id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
 }
 
 // CompleteLogin handles POST /auth/login/complete.

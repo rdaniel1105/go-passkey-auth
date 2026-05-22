@@ -9,17 +9,20 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/rdaniel1105/go-passkey-auth/internal/api/handler"
+	"github.com/rdaniel1105/go-passkey-auth/internal/api/middleware"
 )
 
 // Deps bundles the collaborators the API needs to satisfy its handlers.
 // Adding a new endpoint that needs a new collaborator means adding a field
 // here, not threading values through the call site.
 type Deps struct {
-	Logger *slog.Logger
-	Auth   *handler.AuthHandler
+	Logger   *slog.Logger
+	Auth     *handler.AuthHandler
+	User     *handler.UserHandler
+	Sessions middleware.SessionStore
 }
 
 // New builds the chi router. All routes are prefixed with /api/v1; health
@@ -27,10 +30,12 @@ type Deps struct {
 func New(deps Deps) http.Handler {
 	r := chi.NewRouter()
 
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(chimw.RequestID)
+	r.Use(chimw.RealIP)
+	r.Use(chimw.Recoverer)
+	r.Use(chimw.Timeout(30 * time.Second))
+
+	requireSession := middleware.RequireSession(deps.Sessions, deps.Logger)
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Route("/auth", func(r chi.Router) {
@@ -39,6 +44,13 @@ func New(deps Deps) http.Handler {
 			r.Post("/login/begin", deps.Auth.BeginLogin)
 			r.Post("/login/complete", deps.Auth.CompleteLogin)
 			r.Post("/logout", deps.Auth.Logout)
+		})
+
+		r.Route("/users/me", func(r chi.Router) {
+			r.Use(requireSession)
+			r.Get("/", deps.User.Me)
+			r.Get("/credentials", deps.User.ListCredentials)
+			r.Delete("/credentials/{id}", deps.User.DeleteCredential)
 		})
 	})
 

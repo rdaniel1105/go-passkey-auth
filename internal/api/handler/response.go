@@ -26,12 +26,13 @@ var codeMessages = map[string]string{
 	"invalid_request":   "Request body could not be parsed.",
 	"missing_fields":    "One or more required fields are missing.",
 	"username_taken":    "That username is already registered.",
-	"credential_exists": "That credential is already registered.",
-	"session_invalid":   "Registration session is invalid or has expired. Please start over.",
+	"credential_exists":    "That credential is already registered.",
+	"session_invalid":      "Registration session is invalid or has expired. Please start over.",
 	"attestation_rejected": "Authenticator returned an attestation format we do not accept.",
-	"unauthorized":      "Authentication required.",
-	"not_found":         "Resource not found.",
-	"internal_error":    "Internal server error.",
+	"unauthorized":         "Authentication required.",
+	"not_found":            "Resource not found.",
+	"last_credential":      "Cannot delete the last passkey. Register another one first.",
+	"internal_error":       "Internal server error.",
 }
 
 // writeJSON writes v as a JSON response with status. It logs (but does not

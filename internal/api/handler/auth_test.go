@@ -77,6 +77,11 @@ type fakeCredentialStore struct {
 	// updates records the (id, signCount, BE, BS) of each
 	// UpdateAfterAssertion call so tests can verify counter writes.
 	updates []credentialUpdate
+
+	// softDeleteOverride, if set, replaces the default SoftDelete behavior
+	// (which removes from byUser). Tests use it to inject ErrLastCredential
+	// and similar.
+	softDeleteOverride func(id uuid.UUID) error
 }
 
 type credentialUpdate struct {
@@ -133,6 +138,27 @@ func (s *fakeCredentialStore) UpdateAfterAssertion(_ context.Context, id uuid.UU
 
 	s.updates = append(s.updates, credentialUpdate{id, signCount, be, bs})
 	return nil
+}
+
+func (s *fakeCredentialStore) SoftDelete(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.softDeleteOverride != nil {
+		return s.softDeleteOverride(id)
+	}
+
+	for userID, list := range s.byUser {
+		for i, c := range list {
+			if c.ID == id {
+				s.byUser[userID] = append(list[:i], list[i+1:]...)
+				delete(s.byID, string(c.CredentialID))
+				return nil
+			}
+		}
+	}
+
+	return domain.ErrCredentialNotFound
 }
 
 type fakeChallengeStore struct {
