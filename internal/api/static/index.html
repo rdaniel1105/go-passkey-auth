@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>go-passkey-auth demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --fg: #0f172a;
+    --muted: #64748b;
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --border: #e2e8f0;
+    --accent: #0f766e;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    margin: 0; padding: 2rem 1rem;
+    background: var(--bg); color: var(--fg);
+    max-width: 720px; margin-inline: auto;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.05rem; margin: 0 0 0.75rem; color: var(--muted); font-weight: 500; }
+  section {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin: 1rem 0;
+  }
+  label { display: block; margin: 0.5rem 0; font-size: 0.875rem; }
+  input[type="text"] {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.95rem;
+  }
+  button {
+    appearance: none;
+    background: var(--accent);
+    color: white;
+    border: 0;
+    border-radius: 6px;
+    padding: 0.55rem 1rem;
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    margin: 0.25rem 0.25rem 0.25rem 0;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button.danger { background: var(--danger); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  pre {
+    background: #0f172a;
+    color: #f1f5f9;
+    padding: 0.75rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    overflow-x: auto;
+    white-space: pre-wrap;
+  }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    margin: 0.4rem 0;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  li .meta { flex: 1; font-size: 0.85rem; }
+  li .name { font-weight: 600; margin-right: 0.4rem; }
+  li code { font-size: 0.75rem; color: var(--muted); }
+  li .transports { display: block; color: var(--muted); font-size: 0.8rem; margin-top: 0.15rem; }
+  .hidden { display: none; }
+  .status {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    border: 1px solid var(--border);
+    background: #f1f5f9;
+  }
+  .status.error { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+  .status.ok    { background: #ecfdf5; border-color: #6ee7b7; color: #065f46; }
+</style>
+</head>
+<body>
+
+<h1>go-passkey-auth</h1>
+<h2>Demo client — WebAuthn registration, login, conditional UI, guest promotion.</h2>
+
+<section id="auth">
+  <h2>Authenticate</h2>
+
+  <!-- Conditional UI: the autocomplete="webauthn" hint lets the browser
+       offer passkeys via the username autofill on supported platforms. -->
+  <label>
+    Username
+    <input type="text" id="username" autocomplete="username webauthn" placeholder="e.g. alice@example.com">
+  </label>
+  <label>
+    Display name
+    <input type="text" id="displayName" placeholder="Alice">
+  </label>
+
+  <button id="btnRegister">Register passkey</button>
+  <button id="btnLogin" class="secondary">Log in with passkey</button>
+  <button id="btnGuest" class="secondary">Continue as guest</button>
+
+  <div id="authStatus" class="status hidden"></div>
+</section>
+
+<section id="guest" class="hidden">
+  <h2>You're signed in as a guest</h2>
+  <p style="font-size:0.9rem;color:var(--muted)">
+    Add a passkey to promote this guest to a real account. The same
+    user row keeps its id; only the credentials and username change.
+  </p>
+  <label>
+    Username
+    <input type="text" id="promoteUsername" placeholder="alice@example.com">
+  </label>
+  <label>
+    Display name
+    <input type="text" id="promoteDisplay" placeholder="Alice">
+  </label>
+  <button id="btnPromote">Promote with a passkey</button>
+</section>
+
+<section id="me" class="hidden">
+  <h2>Signed in</h2>
+  <pre id="meBody"></pre>
+
+  <h2>Passkeys</h2>
+  <ul id="credList"></ul>
+
+  <button id="btnLogout" class="danger">Log out</button>
+</section>
+
+<script>
+// ------------------------------------------------------------
+// Base64URL <-> ArrayBuffer helpers
+// WebAuthn's binary fields go on the wire as base64url strings.
+// ------------------------------------------------------------
+
+function b64uToBuf(str) {
+  // RFC 4648 §5: URL-safe alphabet, no padding. Convert to standard
+  // base64 first, then atob.
+  const pad = "=".repeat((4 - (str.length % 4)) % 4);
+  const std = (str + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(std);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return buf.buffer;
+}
+
+function bufToB64u(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// ------------------------------------------------------------
+// Server-payload preparation: decode the base64url binary fields
+// the server sends so navigator.credentials accepts them.
+// ------------------------------------------------------------
+
+function prepCreationOptions(options) {
+  const o = { ...options };
+  o.challenge = b64uToBuf(options.challenge);
+  o.user = { ...options.user, id: b64uToBuf(options.user.id) };
+
+  if (options.excludeCredentials) {
+    o.excludeCredentials = options.excludeCredentials.map(c => ({
+      ...c,
+      id: b64uToBuf(c.id),
+    }));
+  }
+
+  return o;
+}
+
+function prepRequestOptions(options) {
+  const o = { ...options };
+  o.challenge = b64uToBuf(options.challenge);
+
+  if (options.allowCredentials) {
+    o.allowCredentials = options.allowCredentials.map(c => ({
+      ...c,
+      id: b64uToBuf(c.id),
+    }));
+  }
+
+  return o;
+}
+
+// ------------------------------------------------------------
+// Client response -> server envelope
+// ------------------------------------------------------------
+
+function attestationToWire(cred) {
+  return {
+    id: cred.id,
+    rawId: bufToB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON:    bufToB64u(cred.response.clientDataJSON),
+      attestationObject: bufToB64u(cred.response.attestationObject),
+    },
+  };
+}
+
+function assertionToWire(cred) {
+  return {
+    id: cred.id,
+    rawId: bufToB64u(cred.rawId),
+    type: cred.type,
+    response: {
+      clientDataJSON:    bufToB64u(cred.response.clientDataJSON),
+      authenticatorData: bufToB64u(cred.response.authenticatorData),
+      signature:         bufToB64u(cred.response.signature),
+      userHandle:        cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null,
+    },
+  };
+}
+
+// ------------------------------------------------------------
+// HTTP helper. The session cookie is HttpOnly so we never see it;
+// "credentials: same-origin" makes the browser send it on every call.
+// ------------------------------------------------------------
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+    credentials: "same-origin",
+  });
+  const text = await res.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep null */ }
+  return { ok: res.ok, status: res.status, body: parsed, text };
+}
+
+// ------------------------------------------------------------
+// UI helpers
+// ------------------------------------------------------------
+
+const $ = (id) => document.getElementById(id);
+
+function setStatus(msg, kind) {
+  const el = $("authStatus");
+  el.textContent = msg;
+  el.className = "status " + (kind || "");
+  el.classList.remove("hidden");
+}
+
+function show(id) { $(id).classList.remove("hidden"); }
+function hide(id) { $(id).classList.add("hidden"); }
+
+function el(tag, opts) {
+  const node = document.createElement(tag);
+  if (!opts) return node;
+  if (opts.text) node.textContent = opts.text;
+  if (opts.cls) node.className = opts.cls;
+  return node;
+}
+
+// ------------------------------------------------------------
+// Flows
+// ------------------------------------------------------------
+
+async function register() {
+  const username = $("username").value.trim();
+  const displayName = $("displayName").value.trim();
+  if (!username || !displayName) {
+    setStatus("Username and display name are required.", "error");
+    return;
+  }
+
+  setStatus("Starting registration...");
+
+  const begin = await api("POST", "/api/v1/auth/register/begin", {
+    username, display_name: displayName,
+  });
+
+  if (!begin.ok) {
+    setStatus("Begin failed: " + (begin.body?.message || begin.text), "error");
+    return;
+  }
+
+  try {
+    const cred = await navigator.credentials.create({
+      publicKey: prepCreationOptions(begin.body.options),
+    });
+    const complete = await api("POST", "/api/v1/auth/register/complete", {
+      session_id: begin.body.session_id,
+      credential: attestationToWire(cred),
+    });
+
+    if (!complete.ok) {
+      setStatus("Complete failed: " + (complete.body?.message || complete.text), "error");
+      return;
+    }
+
+    setStatus("Passkey registered. Now log in.", "ok");
+  } catch (err) {
+    setStatus("Authenticator error: " + err.message, "error");
+  }
+}
+
+async function login() {
+  setStatus("Starting login...");
+
+  const begin = await api("POST", "/api/v1/auth/login/begin", {});
+  if (!begin.ok) {
+    setStatus("Begin failed: " + (begin.body?.message || begin.text), "error");
+    return;
+  }
+
+  try {
+    const cred = await navigator.credentials.get({
+      publicKey: prepRequestOptions(begin.body.options),
+    });
+    await completeLogin(begin.body.session_id, cred);
+  } catch (err) {
+    setStatus("Authenticator error: " + err.message, "error");
+  }
+}
+
+async function completeLogin(sessionID, cred) {
+  const complete = await api("POST", "/api/v1/auth/login/complete", {
+    session_id: sessionID,
+    credential: assertionToWire(cred),
+  });
+
+  if (!complete.ok) {
+    setStatus("Login failed: " + (complete.body?.message || complete.text), "error");
+    return;
+  }
+
+  setStatus("Logged in as " + complete.body.username + ".", "ok");
+  await refreshMe();
+}
+
+async function guest() {
+  const res = await api("POST", "/api/v1/auth/guest", {});
+  if (!res.ok) {
+    setStatus("Guest failed: " + (res.body?.message || res.text), "error");
+    return;
+  }
+
+  setStatus("Guest session created.", "ok");
+  show("guest");
+}
+
+async function promote() {
+  const username = $("promoteUsername").value.trim();
+  const displayName = $("promoteDisplay").value.trim();
+  if (!username || !displayName) return;
+
+  const begin = await api("POST", "/api/v1/auth/promote/begin", {
+    username, display_name: displayName,
+  });
+  if (!begin.ok) {
+    setStatus("Promote begin failed: " + (begin.body?.message || begin.text), "error");
+    return;
+  }
+
+  try {
+    const cred = await navigator.credentials.create({
+      publicKey: prepCreationOptions(begin.body.options),
+    });
+    const complete = await api("POST", "/api/v1/auth/promote/complete", {
+      session_id: begin.body.session_id,
+      credential: attestationToWire(cred),
+    });
+
+    if (!complete.ok) {
+      setStatus("Promote complete failed: " + (complete.body?.message || complete.text), "error");
+      return;
+    }
+
+    setStatus("Promoted to " + complete.body.username + ".", "ok");
+    hide("guest");
+    await refreshMe();
+  } catch (err) {
+    setStatus("Authenticator error: " + err.message, "error");
+  }
+}
+
+function renderCredential(c) {
+  const li = document.createElement("li");
+
+  const meta = el("div", { cls: "meta" });
+
+  if (c.name) {
+    meta.append(el("span", { text: c.name, cls: "name" }));
+  }
+
+  meta.append(el("code", { text: c.id.slice(0, 8) + "…" }));
+
+  const transports = el("span", {
+    text: (c.transports || []).join(", "),
+    cls: "transports",
+  });
+  meta.append(transports);
+
+  const del = el("button", { text: "Delete", cls: "danger" });
+  del.addEventListener("click", async () => {
+    const res = await api("DELETE", "/api/v1/users/me/credentials/" + c.id);
+    if (res.status === 409) {
+      setStatus("Cannot delete the last passkey.", "error");
+      return;
+    }
+    if (!res.ok) {
+      setStatus("Delete failed.", "error");
+      return;
+    }
+    await refreshMe();
+  });
+
+  li.append(meta, del);
+  return li;
+}
+
+async function refreshMe() {
+  const me = await api("GET", "/api/v1/users/me");
+  if (!me.ok) {
+    hide("me");
+    return;
+  }
+
+  $("meBody").textContent = JSON.stringify(me.body, null, 2);
+
+  const list = await api("GET", "/api/v1/users/me/credentials");
+  const ul = $("credList");
+  ul.replaceChildren();
+
+  for (const c of (list.body || [])) {
+    ul.append(renderCredential(c));
+  }
+
+  show("me");
+}
+
+async function logout() {
+  await api("POST", "/api/v1/auth/logout", null);
+  hide("me");
+  $("meBody").textContent = "";
+  $("credList").replaceChildren();
+  setStatus("Logged out.", "ok");
+}
+
+// ------------------------------------------------------------
+// Conditional UI: if the browser supports it, start a silent
+// navigator.credentials.get with mediation: "conditional". The
+// browser may then surface passkeys via the username autofill chip
+// without the user clicking anything.
+// ------------------------------------------------------------
+
+async function startConditionalUI() {
+  if (!window.PublicKeyCredential?.isConditionalMediationAvailable) return;
+
+  try {
+    const available = await PublicKeyCredential.isConditionalMediationAvailable();
+    if (!available) return;
+  } catch { return; }
+
+  const begin = await api("POST", "/api/v1/auth/login/begin", {});
+  if (!begin.ok) return;
+
+  try {
+    const cred = await navigator.credentials.get({
+      publicKey: prepRequestOptions(begin.body.options),
+      mediation: "conditional",
+    });
+    if (cred) await completeLogin(begin.body.session_id, cred);
+  } catch {
+    // The conditional UI rejects with AbortError on every other login
+    // ceremony; swallow it.
+  }
+}
+
+// ------------------------------------------------------------
+// Wire-up
+// ------------------------------------------------------------
+
+$("btnRegister").addEventListener("click", register);
+$("btnLogin").addEventListener("click", login);
+$("btnGuest").addEventListener("click", guest);
+$("btnPromote").addEventListener("click", promote);
+$("btnLogout").addEventListener("click", logout);
+
+refreshMe();
+startConditionalUI();
+</script>
+</body>
+</html>

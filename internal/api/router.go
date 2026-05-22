@@ -4,6 +4,7 @@
 package api
 
 import (
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/rdaniel1105/go-passkey-auth/internal/api/handler"
 	"github.com/rdaniel1105/go-passkey-auth/internal/api/middleware"
+	"github.com/rdaniel1105/go-passkey-auth/internal/api/static"
 )
 
 // Deps bundles the collaborators the API needs to satisfy its handlers.
@@ -39,6 +41,15 @@ func New(deps Deps) http.Handler {
 
 	r.Get("/health", deps.Health.Live)
 	r.Get("/health/ready", deps.Health.Ready)
+
+	// Demo client served from /. http.FileServer would redirect
+	// /index.html ↔ / and fight our rewrite, so we just dump the bytes.
+	if indexHTML, err := fs.ReadFile(static.FS, "index.html"); err == nil {
+		r.Get("/", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write(indexHTML)
+		})
+	}
 
 	requireSession := middleware.RequireSession(deps.Sessions, deps.Logger)
 

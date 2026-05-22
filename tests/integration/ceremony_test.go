@@ -334,6 +334,19 @@ func TestCeremony_Health(t *testing.T) {
 	c.Equal(http.StatusOK, get(t, client, srv.url+"/health/ready").status)
 }
 
+func TestCeremony_DemoClientServed(t *testing.T) {
+	c := require.New(t)
+
+	srv := startStack(t)
+	client := newClient(t)
+
+	res := get(t, client, srv.url+"/")
+	c.Equal(http.StatusOK, res.status)
+	c.Contains(string(res.body), "<title>go-passkey-auth demo</title>")
+	c.Contains(string(res.body), "navigator.credentials.create")
+	c.Contains(string(res.body), "navigator.credentials.get")
+}
+
 func TestCeremony_FullRegistrationAndLogin(t *testing.T) {
 	c := require.New(t)
 
