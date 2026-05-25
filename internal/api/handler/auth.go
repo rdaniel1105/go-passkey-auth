@@ -137,6 +137,7 @@ type completeRegisterRequest struct {
 }
 
 type completeRegisterResponse struct {
+	UserID       string `json:"user_id"`
 	CredentialID string `json:"credential_id"`
 }
 
@@ -371,6 +372,7 @@ func (h *AuthHandler) CompleteRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, h.logger, http.StatusOK, completeRegisterResponse{
+		UserID:       user.ID.String(),
 		CredentialID: saved.ID.String(),
 	})
 }

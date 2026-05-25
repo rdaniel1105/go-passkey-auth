@@ -375,6 +375,10 @@ func TestCeremony_FullRegistrationAndLogin(t *testing.T) {
 	})
 	c.Equal(http.StatusOK, res.status, "register complete body: %s", res.body)
 
+	registerBody := decodeBody[map[string]string](t, res.body)
+	c.NotEmpty(registerBody["user_id"], "register complete must return the passkey-side user_id")
+	c.NotEmpty(registerBody["credential_id"], "register complete must return the credential_id")
+
 	// --- Login ---
 	res = postJSON(t, client, srv.url+"/api/v1/auth/login/begin", struct{}{})
 	c.Equal(http.StatusOK, res.status, "login begin body: %s", res.body)
